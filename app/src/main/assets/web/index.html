@@ -38,8 +38,10 @@ button:disabled{opacity:.4;cursor:default}
 .msg .head{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px}
 .msg .head .who{color:var(--primary);font-weight:600}
 .msg pre{margin:0;white-space:pre-wrap;word-break:break-word;font:inherit}
-.msg .act{display:flex;justify-content:flex-end;margin-top:6px}
+.msg .act{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
 .msg .act button{padding:4px 12px;font-size:13px}
+#clearall{font-size:13px;color:var(--muted)}
+.listhead{display:flex;justify-content:flex-end;margin-bottom:4px}
 #empty{text-align:center;color:var(--muted);margin-top:48px;line-height:1.8}
 #empty code{background:var(--container);padding:2px 6px;border-radius:6px;word-break:break-all}
 </style>
@@ -59,6 +61,7 @@ button:disabled{opacity:.4;cursor:default}
     </div>
     <div id="status"></div>
   </div>
+  <div class="listhead"><button id="clearall" hidden>清空全部记录</button></div>
   <div id="list"></div>
   <div id="empty">还没有消息<br>发送后，所有在线设备都会收到；手机不在线时自动暂存</div>
 </main>
@@ -112,18 +115,30 @@ function fmt(ts){
 }
 function render(){
   if(!dirty)return; dirty=false;
+  document.getElementById('clearall').hidden = msgs.length===0;
   list.innerHTML=msgs.map(m=>{
     const who=(myId&&m.sid===myId)?'我':esc(m.name);
     return `<div class="msg"><div class="head"><span class="who">${who}</span>`+
     `<span>${fmt(m.ts)}</span></div><pre>${esc(m.text)}</pre>`+
-    `<div class="act"><button data-id="${m.id}">复制</button></div></div>`;}).join('');
+    `<div class="act"><button data-id="${m.id}">复制</button><button data-del="${m.id}">删除</button></div></div>`;}).join('');
   empty.style.display=msgs.length?'none':'block';
   window.scrollTo(0,document.body.scrollHeight);
 }
-list.addEventListener('click',e=>{
-  const b=e.target.closest('button'); if(!b)return;
+list.addEventListener('click',async e=>{
+  const del=e.target.closest('button[data-del]');
+  if(del){
+    const id=del.dataset.del;
+    try{ await fetch('/api/messages/'+id,{method:'DELETE'}); }catch(err){}
+    msgs=msgs.filter(x=>x.id!==id); seen.delete(id); dirty=true; render(); return;
+  }
+  const b=e.target.closest('button[data-id]'); if(!b)return;
   const m=msgs.find(x=>x.id===b.dataset.id);
   if(m){ copyText(m.text); b.textContent='已复制'; setTimeout(()=>b.textContent='复制',1200); }
+});
+document.getElementById('clearall').addEventListener('click',async()=>{
+  if(!msgs.length || !confirm('确定清空全部消息记录？（仅清除保存这些消息的设备，其他设备不受影响）')) return;
+  try{ await fetch('/api/messages',{method:'DELETE'}); }catch(err){}
+  msgs=[]; seen.clear(); dirty=true; render();
 });
 
 /* 连接状态：经 PC 工具打开时显示是否连上手机；直接用手机 IP 打开时显示手机名 */

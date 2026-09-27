@@ -27,5 +27,5 @@ object Protocol {
 
     /** 消息保留策略 */
     const val MAX_MESSAGES = 1000
-    const val MAX_AGE_MS = 7L * 24 * 3600 * 1000
+    const val MAX_AGE_MS = 24L * 3600 * 1000
 }

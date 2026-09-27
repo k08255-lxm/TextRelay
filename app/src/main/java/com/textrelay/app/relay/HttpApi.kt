@@ -54,6 +54,20 @@ object HttpApi {
                 json(JSONArray().also { a -> msgs.forEach { a.put(it.toJson()) } })
             }
 
+            uri == "/api/messages" && method == NanoHTTPD.Method.DELETE -> {
+                MessageStore.clear()
+                plain(NanoHTTPD.Response.Status.OK, "cleared")
+            }
+
+            uri.startsWith("/api/messages/") && method == NanoHTTPD.Method.DELETE -> {
+                val id = uri.removePrefix("/api/messages/").takeIf { it.isNotEmpty() }
+                    ?: return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "missing id")
+                plain(
+                    NanoHTTPD.Response.Status.OK,
+                    if (MessageStore.delete(id)) "deleted" else "not found"
+                )
+            }
+
             uri == "/api/send" && method == NanoHTTPD.Method.POST -> {
                 val body = runCatching { JSONObject(readBody(session)) }.getOrNull()
                     ?: return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "bad body")

@@ -42,6 +42,16 @@ class MainViewModel : ViewModel() {
         RelayEngine.send(text)
     }
 
+    /** 删除单条消息（本机），并防止被其他设备同步回来 */
+    fun deleteMessage(id: String) {
+        MessageStore.delete(id)
+    }
+
+    /** 清空本机全部消息，并防止被其他设备同步回来 */
+    fun clearMessages() {
+        MessageStore.clear()
+    }
+
     /** 手动检查：无论结果如何都弹窗反馈 */
     fun checkUpdate(manual: Boolean) {
         viewModelScope.launch {

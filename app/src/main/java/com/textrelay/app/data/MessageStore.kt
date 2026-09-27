@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -25,6 +26,11 @@ object MessageStore {
     private val fileLock = Any()
     private val byId = LinkedHashMap<String, Message>()
     private lateinit var file: File
+
+    // 删除语义：清空时间点之前的消息不再接收（防止清空后被其他设备同步回来）；
+    // 单条删除记录墓碑 id，同理
+    private var clearedBefore = 0L
+    private val tombstones = LinkedHashSet<String>()
 
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages
@@ -45,6 +51,7 @@ object MessageStore {
             pruneLocked()
             publishLocked()
         }
+        loadMeta()
     }
 
     fun latestTs(): Long = synchronized(lock) {
@@ -71,11 +78,8 @@ object MessageStore {
     fun add(m: Message): Boolean {
         var isNew = false
         synchronized(lock) {
-            if (!byId.containsKey(m.id)) {
-                byId[m.id] = m
-                publishLocked()
-                isNew = true
-            }
+            isNew = put(m)
+            if (isNew) publishLocked()
         }
         if (isNew) {
             persistAppend(listOf(m))
@@ -87,24 +91,70 @@ object MessageStore {
     fun addAll(list: List<Message>): Int {
         val fresh = ArrayList<Message>()
         synchronized(lock) {
-            list.forEach {
-                if (!byId.containsKey(it.id)) {
-                    byId[it.id] = it
-                    fresh.add(it)
-                }
-            }
+            list.forEach { if (put(it)) fresh.add(it) }
             if (fresh.isNotEmpty()) publishLocked()
         }
         if (fresh.isNotEmpty()) persistAppend(fresh)
         return fresh.size
     }
 
+    /** 删除单条消息（本机），并记录墓碑防止被其他设备同步回来 */
+    fun delete(id: String): Boolean {
+        var removed = false
+        synchronized(lock) {
+            if (byId.remove(id) != null) {
+                tombstones.add(id)
+                if (tombstones.size > 500) tombstones.remove(tombstones.first())
+                publishLocked()
+                removed = true
+            }
+        }
+        if (removed) {
+            saveMeta()
+            rewrite()
+        }
+        return removed
+    }
+
     fun clear() {
         synchronized(lock) {
             byId.clear()
+            tombstones.clear()
+            clearedBefore = System.currentTimeMillis()
             publishLocked()
         }
         synchronized(fileLock) { runCatching { file.delete() } }
+        saveMeta()
+    }
+
+    /** 写入去重 + 删除过滤：墓碑消息与清空时间点之前的消息不再接收 */
+    private fun put(m: Message): Boolean {
+        if (m.ts <= clearedBefore || m.id in tombstones || byId.containsKey(m.id)) return false
+        byId[m.id] = m
+        return true
+    }
+
+    private fun loadMeta() {
+        runCatching {
+            val meta = File(file.parentFile, "store_meta.json")
+            if (!meta.exists()) return
+            val o = JSONObject(meta.readText(Charsets.UTF_8))
+            clearedBefore = o.optLong("clearedBefore", 0L)
+            o.optJSONArray("tombstones")?.let { arr ->
+                for (i in 0 until arr.length()) tombstones.add(arr.getString(i))
+            }
+        }
+    }
+
+    private fun saveMeta() {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val o = JSONObject()
+                    .put("clearedBefore", clearedBefore)
+                    .put("tombstones", JSONArray(tombstones))
+                File(file.parentFile, "store_meta.json").writeText(o.toString(), Charsets.UTF_8)
+            }
+        }
     }
 
     private fun maybePrune() {

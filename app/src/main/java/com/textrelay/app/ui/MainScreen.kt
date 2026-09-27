@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -85,6 +86,7 @@ fun MainScreen(vm: MainViewModel) {
     val draft by vm.draft.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     var showPeers by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
     val myId = Prefs.deviceId
 
     fun copy(text: String) {
@@ -105,6 +107,9 @@ fun MainScreen(vm: MainViewModel) {
             TopAppBar(
                 title = { Text("文字互传") },
                 actions = {
+                    IconButton(onClick = { showClearConfirm = true }) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "清空本机消息")
+                    }
                     IconButton(onClick = { vm.checkUpdate(manual = true) }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "检查更新")
                     }
@@ -153,7 +158,11 @@ fun MainScreen(vm: MainViewModel) {
                         MessageCard(
                             message = m,
                             mine = m.senderId == myId,
-                            onCopy = { copy(m.text) }
+                            onCopy = { copy(m.text) },
+                            onDelete = {
+                                vm.deleteMessage(m.id)
+                                scope.launch { snackbar.showSnackbar("已删除") }
+                            }
                         )
                     }
                 }
@@ -163,6 +172,24 @@ fun MainScreen(vm: MainViewModel) {
 
     if (showPeers) {
         PeersDialog(vm = vm, onDismiss = { showPeers = false }, onCopy = { copy(it) })
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("清空本机全部消息？") },
+            text = { Text("将从本机删除全部记录；已删除的内容不会被其他设备重新同步过来（其他设备保留它们自己的记录）。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearConfirm = false
+                    vm.clearMessages()
+                    scope.launch { snackbar.showSnackbar("已清空本机消息") }
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
+            }
+        )
     }
 
     val updateEvent by vm.updateEvent.collectAsStateWithLifecycle()
@@ -286,7 +313,7 @@ private fun SendCard(
 }
 
 @Composable
-private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit) {
+private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit, onDelete: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Card(
         modifier = Modifier
@@ -323,6 +350,11 @@ private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit) {
                     Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("复制")
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.Delete, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("删除")
                 }
             }
         }

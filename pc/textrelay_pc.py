@@ -331,12 +331,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._proxy("POST")
 
+    def do_DELETE(self):
+        self._proxy("DELETE")
+
     def log_message(self, fmt, *args):
         pass  # 静默普通请求日志
 
     def _proxy(self, method):
         path = self.path.split("?", 1)[0]
-        if path not in ALLOWED_PATHS:
+        # /api/messages/<id>（单条删除）允许前缀匹配
+        if path not in ALLOWED_PATHS and not path.startswith("/api/messages/"):
             self._error_page(404, "接口不存在")
             return
 
@@ -371,6 +375,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         with lock:
             target = current
         if not target:
+            if method == "DELETE":
+                # 电脑不保存消息；远端手机也不在线时无记录可删，直接确认
+                self._json_response({"ok": True})
+                return
             self._error_page(
                 503,
                 "尚未发现手机\n\n请检查：\n"
