@@ -1,98 +1,50 @@
 # 文字互传 (TextRelay)
 
-局域网文字互传 Android 应用 · Material 3 · 轻量级
+同一局域网内电脑 / 手机 / 平板互发文字。Material 3 · Release APK 约 1.2MB · 无广告无服务端。
 
-在同一个 Wi-Fi / 局域网内，电脑、手机、平板之间互发文字：
+## 功能
 
-- **手机 ↔ 手机**：双方都安装本 APP，自动发现、自动收发
-- **电脑 → 手机 / 手机 → 电脑**：电脑运行 `pc` 目录的小工具，浏览器永远只开 `http://127.0.0.1:24680`，无需找手机 IP
-- **离线补收**：发送时对方不在线也没关系，消息保存在双方本地，设备上线后自动对账补齐
-- **电脑离线也能发**：手机不在线时，电脑发出的消息暂存在本机（`~/.textrelay/outbox`），手机一上线自动送达，网页会显示「已暂存」状态
-- **消息保留与清理**：每台设备只保留最近 **1 天**的消息（最多 1000 条），自动清理；每条消息和全部记录都有删除/清空按钮，清除后的内容不会被其他设备重新同步回来
-- **电脑不存消息**：电脑网页每次从手机拉取展示，本地只保存未送达的暂存消息（送达即清）
-- **电脑有身份**：电脑会作为设备出现在手机的设备列表里；UDP 被防火墙拦截时，电脑会自动扫描网段发现手机（约十几秒），无需手动干预
-- **方便复制**：每条消息一键复制；支持从任意应用的「分享」菜单把文字直接发出去
-- **检查更新**：顶栏刷新按钮手动检查；APP 启动时也会自动检查（24 小时节流），发现新版弹窗跳转浏览器下载。国内直连 GitHub 失败时，会自动请局域网里的电脑代查（需 PC 工具在运行）
-- **固定签名**：debug/release 共用一把密钥，升级直接覆盖安装，无需卸载重装
+- **自动发现**：同网段设备免配置互连；电脑也作为设备出现在手机列表里
+- **网页收发**：电脑运行 `pc` 工具后，浏览器只开 `http://127.0.0.1:24680`
+- **离线必达**：对方不在线时消息暂存本地，上线自动补齐（电脑离线发送同样暂存）
+- **保留 1 天**：自动清理（上限 1000 条）；支持单条删除与一键清空
+- **检查更新**：APP 内手动 / 自动（24h 节流），失败时显示具体原因
+- **系统分享**：任意应用「分享 → 文字互传」直接发送
 
-## 下载 APK（发布方式：可选本地或云端编译）
+## 快速开始
 
-为节省 Actions 额度，云端编译已改为**仅手动触发**（Actions 页面运行 Release 工作流，支持「强制重发」）；日常发版推荐本地编译：
+**手机**：到 [Releases](https://github.com/k08255-lxm/TextRelay/releases) 下载 APK 安装，打开即可（同一 Wi-Fi）。
 
-- **本地编译发版（推荐，零额度消耗）**：
-  ```bash
-  ./gradlew assembleRelease
-  gh release create vX.Y.Z app/build/outputs/apk/release/app-release.apk --title "TextRelay vX.Y.Z" --notes "更新说明"
-  ```
-- **云端编译**：Actions 页面手动运行，与本地编译使用同一把签名密钥（Secrets 注入），产物可互相覆盖安装
+**电脑**（需 Python 3）：双击 `pc/启动文字互传.bat`，浏览器自动打开 `127.0.0.1:24680`。
 
-## 构建与安装
+- UDP 被防火墙拦截时自动扫描网段发现手机（十几秒）；也可手动指定：`python textrelay_pc.py --phone 手机IP`
+- 不装 Python 也行：浏览器直接开手机通知栏里的 `http://手机IP:24680`
 
-需要 JDK 17+ 与 Android SDK（或直接用 Android Studio）。
+## 构建与发版
 
 ```bash
-# 命令行构建（Windows 用 gradlew.bat）
-./gradlew assembleDebug      # 调试包
-./gradlew assembleRelease    # 发布包（R8 裁剪，约 1.2MB）
-# 产物：app/build/outputs/apk/{debug,release}/app-*.apk
+./gradlew assembleRelease   # 产物：app/build/outputs/apk/release/
 ```
 
-或者用 Android Studio 打开本目录，直接 Run。
+发版流程（本地编译 + 草稿直发 / 云端编译）见 [RELEASE.md](RELEASE.md)。
 
-> **签名说明**：debug/release 共用同一把固定签名，升级只需 `versionCode` 递增即可覆盖安装。
-> 签名材料**不进入本仓库**：`app/textrelay.keystore` 与 `keystore.properties`（存密码）都在
-> `.gitignore` 中，只保留在构建机本地；构建脚本从 `keystore.properties` 或环境变量
-> `TEXTRELAY_STORE_PASSWORD` / `TEXTRELAY_KEY_PASSWORD` 读取密码。克隆本仓库构建会使用
-> 默认调试签名（或换成你自己的 keystore，在 `app/build.gradle.kts` 的 `signingConfigs` 里配置）。
->
-> ⚠️ 这两个文件是升级安装的前提，**请自行备份**；一旦同时丢失，只能卸载重装。
+> 签名密钥（`app/textrelay.keystore` + `keystore.properties`）不入库，只在本机——**请自行备份**，丢失后升级需卸载重装。克隆者请自备签名或使用调试签名。
 
-## 使用方法
+## 原理
 
-1. 所有设备连入同一 Wi-Fi，打开 APP（通知栏会显示本机网址）
-2. 手机之间：输入文字 → 发送，局域网内所有打开 APP 的设备自动收到
-3. **电脑（推荐）**：双击 `pc/启动文字互传.bat`（需已安装 Python），会自动发现手机并打开 `http://127.0.0.1:24680`；手机不在线时发送会自动暂存，上线后送达。若 UDP 被防火墙/AP 隔离拦截，可手动指定手机 IP：`python textrelay_pc.py --phone 192.168.3.40`；也可以不装任何东西，直接用浏览器打开通知栏显示的 `http://<手机IP>:24680`
-4. 顶部「设备」图标可查看在线设备、重命名本机、手动添加对方 IP（路由器开了 AP 隔离导致广播被禁时使用）
-5. 任意应用里「分享 → 文字互传」可把分享的文字直接填入发送框
+UDP 信标发现设备 → HTTP 推送 + 每 20 秒对账同步 → 消息本地存储（1 天 / 1000 条，按 id 去重）→ 前台服务保活 + 开机自启。
 
-## 工作原理
+## 限制
 
-| 组件 | 说明 |
-|---|---|
-| UDP 信标 | 每 3 秒向 `255.255.255.255` / 子网广播 / 组播 `239.255.246.80:24681` 广播设备名、HTTP 端口、最新消息时间戳 |
-| HTTP 服务 | NanoHTTPD，端口 `24680`，同时服务网页版与 APP 间同步接口 |
-| 消息同步 | 收到信标后对比双方最新时间戳，缺的一方拉取 / 多的一方推送；每 20 秒强制对账一次 |
-| 离线补收 | 每台设备把见过的消息都存进本地（JSONL 文件，保留 7 天 / 1000 条，按 id 去重），上线后经信标对账自动补齐 |
-| 常驻 | 前台服务（dataSync 类型）保活；开机自启 |
-
-```
-App A 发送 → 落库 → 逐个 POST /push 给在线设备
-                ↘ 离线设备上线后广播信标(带latest) → 邻居发现它落后 → 推送缺失消息
-```
-
-## 已知限制
-
-- 必须同一局域网（无公网中继）；路由器开启「AP 隔离 / 访客网络」会阻断互访，可在「设备」对话框手动添加 IP
-- 设备间时钟差要求在 10 分钟以内（同步按时间戳 + 重叠窗口对账，按消息 id 去重）
-- 消息保留 7 天、最多 1000 条，超限自动清理最旧的
-- 部分厂商的后台限制可能杀掉常驻服务；如需长期可靠接收，请在系统设置里允许本应用自启动 / 无限制耗电
-- 电脑网页在 `http://` 非安全源下，「粘贴」按钮可能被浏览器拦截，直接在输入框 `Ctrl+V` 即可
+- 需同一局域网；AP 隔离 / 访客网络会阻断互访（可在「设备」对话框手动添加 IP）
+- 设备间时钟差需 ≤ 10 分钟
+- 部分厂商激进杀后台 → 请允许本应用自启动 / 无限制耗电
+- 电脑网页为 `http` 非安全源，「粘贴」按钮可能被浏览器拦截 → 输入框内 `Ctrl+V`
 
 ## 目录结构
 
 ```
-app/src/main/java/com/textrelay/app/
-├─ data/        Message / MessageStore(JSONL 存储+去重) / Prefs
-├─ relay/       Protocol / Discovery(UDP) / HttpApi(HTTP服务) / RelayEngine(同步引擎)
-│               PeerRegistry / RelayService(前台服务) / NetworkUtils / Http
-├─ ui/          MainScreen(M3 界面) / Theme(动态取色)
-├─ MainActivity.kt / MainViewModel.kt / BootReceiver.kt
-├─ assets/web/index.html   电脑端网页版（零依赖单文件）
-└─ textrelay.keystore      固定签名（不入库，本机保留）
-
-pc/
-├─ textrelay_pc.py         PC 端：UDP 自动发现 + 127.0.0.1 反向代理 + 离线暂存（纯标准库）
-├─ index.html              与手机端内置网页同源（改动需同步 app/src/main/assets/web/）
-├─ outbox_store.py         离线发件箱持久化（dbm 键值库，~/.textrelay/outbox）
-└─ 启动文字互传.bat         双击启动（支持透传参数，如 --phone IP）
+app/                     Android 应用（Compose + Material 3）
+  src/main/assets/web/   手机内置网页（与 pc/index.html 同源，改动需同步两份）
+pc/                      电脑端：textrelay_pc.py(发现+代理+暂存) / outbox_store.py / index.html / 启动bat
 ```
