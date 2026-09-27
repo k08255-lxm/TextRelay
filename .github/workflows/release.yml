@@ -1,7 +1,7 @@
 name: Release
 
-# 触发规则（省额度）：只在推送 v* 标签时编译一次，同时更新
-# 正式 Release 和 latest 预发布；平时提交代码不会触发任何构建。
+# 触发规则（省额度）：只在推送 v* 标签时编译一次，发布一个正式 Release；
+# 平时提交代码不会触发任何构建。
 
 on:
   push:
@@ -59,16 +59,3 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "$APK" \
             --title "TextRelay $GITHUB_REF_NAME" \
             --notes "自动构建的正式发布（versionName ${VERSION}）。签名与历史版本一致，可直接覆盖升级；versionCode 未变时需先卸载。"
-
-      # 同一个产物顺带刷新 latest，不重复编译
-      - name: Refresh "latest" pre-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null \
-            || git push origin ":refs/tags/latest" 2>/dev/null || true
-          gh release create latest "$APK" \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "最新构建 · ${GITHUB_REF_NAME}" \
-            --notes "随 ${GITHUB_REF_NAME} 正式发布一起更新（versionName ${VERSION}）。"
