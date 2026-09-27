@@ -166,7 +166,7 @@ textarea{width:100%;min-height:64px;max-height:240px;resize:none;border:none;out
   <div id="list"></div>
   <div id="empty">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-    还没有消息<br>发送后，所有在线设备都会收到；手机不在线时自动暂存
+    还没有消息<br>发送后，所有在线设备都会收到；设备离线时保存在本机
   </div>
 </main>
 <div id="toast" role="status"></div>
@@ -298,8 +298,8 @@ async function refreshStatus(){
     if(!r.ok) throw 0;
     const s=await r.json();
     myId=s.id||null;
-    if(s.connected){ devDot.className='dot ok'; devText.textContent='已连接：'+s.device; }
-    else{ devDot.className='dot warn'; devText.textContent='未连接手机 · 发送将暂存'; }
+    if(s.connected){ devDot.className='dot ok'; devText.textContent=(s.onlineCount||1)+' 台设备在线 · '+s.device; }
+    else{ devDot.className='dot warn'; devText.textContent='等待设备上线 · 文字保存在本机'; }
     return;
   }catch(e){ myId=null; }
   try{

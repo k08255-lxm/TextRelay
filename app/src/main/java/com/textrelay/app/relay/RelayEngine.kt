@@ -15,6 +15,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -37,6 +40,8 @@ object RelayEngine {
 
     @Volatile private var boundPort = Protocol.HTTP_PORT
     private val lastSyncAt = ConcurrentHashMap<String, Long>()
+    private val syncLocks = ConcurrentHashMap<String, Mutex>()
+    private val syncSlots = Semaphore(4)
 
     fun httpPort(): Int = boundPort
 
@@ -106,10 +111,10 @@ object RelayEngine {
             .filter { it.isOnline() || it.manual }
             .filter { it.ip != localIpHint() }
         if (targets.isEmpty()) return 0
-        val body = m.toJson().toString()
+        val body = JSONArray().put(m.toJson()).toString()
         return coroutineScope {
             targets.map { peer ->
-                async {
+                async(Dispatchers.IO) {
                     runCatching { Http.post("http://${peer.ip}:${peer.port}/push", body) }
                         .getOrDefault(false)
                 }
@@ -120,7 +125,7 @@ object RelayEngine {
     fun manualPoke(ip: String) {
         scope?.launch {
             runCatching {
-                pullFrom(Peer(ip, "manual", "手动添加", Protocol.HTTP_PORT, 0, 0, true, 0))
+                pullFrom(Peer(ip, "manual", "手动添加", Protocol.HTTP_PORT, 0, 0, true, 0), full = true)
             }
         }
     }
@@ -162,21 +167,32 @@ object RelayEngine {
         val s = scope ?: return
         while (s.isActive) {
             delay(Protocol.SYNC_INTERVAL_MS)
-            PeerRegistry.peers.value.values.toList().forEach { peer ->
-                runCatching { syncPeer(peer, forced = true) }
+            coroutineScope {
+                PeerRegistry.peers.value.values.toList().map { peer ->
+                    async { runCatching { syncPeer(peer, forced = true) } }
+                }.awaitAll()
             }
         }
     }
 
     private suspend fun syncPeer(peer: Peer, forced: Boolean) {
-        val myLatest = MessageStore.latestTs()
-        // 对方比我新：去它那里补漏；我比对方新：把缺的推过去
-        if (forced || peer.latest > myLatest) pullFrom(peer)
-        if (forced || myLatest > peer.latest) pushTo(peer)
+        val mutex = syncLocks.getOrPut(peer.ip) { Mutex() }
+        if (!mutex.tryLock()) return
+        try {
+            syncSlots.withPermit {
+                val myLatest = MessageStore.latestTs()
+                // A timestamp is not a multi-writer cursor. Periodically reconcile the
+                // entire retained set so late messages from a third device cannot be lost.
+                if (forced || peer.latest > myLatest) pullFrom(peer, full = forced)
+                if (forced || myLatest > peer.latest) pushTo(peer)
+            }
+        } finally {
+            mutex.unlock()
+        }
     }
 
-    private suspend fun pullFrom(peer: Peer) {
-        val since = MessageStore.latestTs() - Protocol.OVERLAP_MS
+    private suspend fun pullFrom(peer: Peer, full: Boolean = false) {
+        val since = if (full) 0L else MessageStore.latestTs() - Protocol.OVERLAP_MS
         val body = Http.get("http://${peer.ip}:${peer.port}/api/messages?since=$since") ?: return
         val arr = runCatching { JSONArray(body) }.getOrNull() ?: return
         val msgs = (0 until arr.length()).mapNotNull { i ->
@@ -185,13 +201,12 @@ object RelayEngine {
         MessageStore.addAll(msgs)
     }
 
-    private suspend fun pushTo(peer: Peer, limit: Int = 200) {
-        val msgs = MessageStore.since(peer.pushedUntil - Protocol.OVERLAP_MS).takeLast(limit)
-        if (msgs.isEmpty()) return
-        val arr = JSONArray()
-        msgs.forEach { arr.put(it.toJson()) }
-        val ok = Http.post("http://${peer.ip}:${peer.port}/push", arr.toString())
-        if (ok) PeerRegistry.setPushedUntil(peer.ip, msgs.last().ts)
+    private suspend fun pushTo(peer: Peer) {
+        for (batch in MessageStore.since(0).chunked(100)) {
+            val arr = JSONArray()
+            batch.forEach { arr.put(it.toJson()) }
+            if (!Http.post("http://${peer.ip}:${peer.port}/push", arr.toString())) break
+        }
     }
 
     private fun localIpHint(): String? = appContext?.let { NetworkUtils.localIps().firstOrNull() }

@@ -39,12 +39,13 @@ object MessageStore {
     fun init(context: Context) {
         file = File(context.filesDir, "messages.jsonl")
         synchronized(lock) {
+            loadMeta()
             if (file.exists()) {
                 runCatching {
                     file.readLines(Charsets.UTF_8).forEach { line ->
                         if (line.isNotBlank()) {
                             runCatching { Message.fromJson(JSONObject(line)) }
-                                .getOrNull()?.let { byId[it.id] = it }
+                                .getOrNull()?.let { put(it) }
                         }
                     }
                 }
@@ -52,7 +53,6 @@ object MessageStore {
             pruneLocked()
             publishLocked()
         }
-        loadMeta()
     }
 
     fun latestTs(): Long = synchronized(lock) {
@@ -91,11 +91,13 @@ object MessageStore {
 
     fun addAll(list: List<Message>): Int {
         val fresh = ArrayList<Message>()
+        var pruned = 0
         synchronized(lock) {
             list.forEach { if (put(it)) fresh.add(it) }
-            if (fresh.isNotEmpty()) publishLocked()
+            pruned = pruneLocked()
+            if (fresh.isNotEmpty() || pruned > 0) publishLocked()
         }
-        if (fresh.isNotEmpty()) persistAppend(fresh)
+        if (pruned > 0) rewrite() else if (fresh.isNotEmpty()) persistAppend(fresh)
         return fresh.size
     }
 
@@ -130,6 +132,7 @@ object MessageStore {
 
     /** 写入去重 + 删除过滤：墓碑消息与清空时间点之前的消息不再接收 */
     private fun put(m: Message): Boolean {
+        if (m.ts < System.currentTimeMillis() - MAX_AGE_MS) return false
         if (m.ts <= clearedBefore || m.id in tombstones || byId.containsKey(m.id)) return false
         byId[m.id] = m
         return true

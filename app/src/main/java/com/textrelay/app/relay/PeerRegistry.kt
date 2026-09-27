@@ -16,7 +16,7 @@ data class Peer(
     val pushedUntil: Long
 ) {
     fun isOnline(now: Long = System.currentTimeMillis()): Boolean =
-        !manual && now - lastSeen < Protocol.PEER_TIMEOUT_MS
+        lastSeen > 0 && now - lastSeen < Protocol.PEER_TIMEOUT_MS
 }
 
 object PeerRegistry {
@@ -40,7 +40,7 @@ object PeerRegistry {
             latest = maxOf(latest, old?.latest ?: 0L),
             lastSeen = now,
             manual = old?.manual ?: false,
-            pushedUntil = maxOf(old?.pushedUntil ?: latest, latest)
+            pushedUntil = old?.pushedUntil ?: 0L
         )
         _peers.value = _peers.value + (ip to peer)
     }

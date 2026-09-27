@@ -41,6 +41,7 @@ object HttpApi {
             uri == "/api/info" ->
                 json(
                     JSONObject()
+                        .put("app", Protocol.APP_TAG)
                         .put("name", Prefs.name)
                         .put("id", Prefs.deviceId)
                         .put("port", RelayEngine.httpPort())
@@ -53,7 +54,7 @@ object HttpApi {
             uri == "/api/messages" && method == NanoHTTPD.Method.GET -> {
                 val since = session.parameters["since"]?.firstOrNull()?.toLongOrNull() ?: 0L
                 // 回看一个重叠窗口，容忍设备间时钟误差，接收方按 id 去重
-                val msgs = MessageStore.since(since - Protocol.OVERLAP_MS).takeLast(300)
+                val msgs = MessageStore.since(since - Protocol.OVERLAP_MS)
                 json(JSONArray().also { a -> msgs.forEach { a.put(it.toJson()) } })
             }
 
@@ -85,13 +86,17 @@ object HttpApi {
             }
 
             uri == "/push" && method == NanoHTTPD.Method.POST -> {
-                val added = runCatching {
-                    val arr = JSONArray(readBody(session))
+                val added = try {
+                    val raw = readBody(session).trim()
+                    // Accept old single-message senders as well as batched reconciliation.
+                    val arr = if (raw.startsWith("{")) JSONArray().put(JSONObject(raw)) else JSONArray(raw)
                     val list = (0 until arr.length()).mapNotNull { i ->
                         runCatching { Message.fromJson(arr.getJSONObject(i)) }.getOrNull()
                     }
                     MessageStore.addAll(list)
-                }.getOrDefault(0)
+                } catch (e: Exception) {
+                    return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "bad message payload")
+                }
                 plain(NanoHTTPD.Response.Status.OK, added.toString())
             }
 

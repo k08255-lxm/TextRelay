@@ -38,18 +38,24 @@ class Discovery(
         runCatching { socket?.close() }
     }
 
-    private fun openSocket(): MulticastSocket = MulticastSocket(beaconPort).apply {
-        reuseAddress = true
-        broadcast = true
-        runCatching {
-            val nis = NetworkInterface.getNetworkInterfaces()
-            if (nis != null) {
-                for (ni in nis) {
-                    if (ni.isUp && !ni.isLoopback && ni.supportsMulticast()) {
-                        runCatching { joinGroup(InetSocketAddress(group, beaconPort), ni) }
+    @Synchronized
+    private fun openSocket(): MulticastSocket {
+        socket?.takeUnless { it.isClosed }?.let { return it }
+        return MulticastSocket(null).apply {
+            reuseAddress = true
+            bind(InetSocketAddress(beaconPort))
+            broadcast = true
+            runCatching {
+                val nis = NetworkInterface.getNetworkInterfaces()
+                if (nis != null) {
+                    for (ni in nis) {
+                        if (ni.isUp && !ni.isLoopback && ni.supportsMulticast()) {
+                            runCatching { joinGroup(InetSocketAddress(group, beaconPort), ni) }
+                        }
                     }
                 }
             }
+            socket = this
         }
     }
 
