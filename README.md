@@ -13,10 +13,11 @@
 
 ## 下载 APK（自动发布）
 
-- **最新构建**：main 分支有 **APP 相关改动**（`app/**`、Gradle 配置等）时，GitHub Actions 自动编译并刷新 [latest 预发布](https://github.com/k08255-lxm/TextRelay/releases/tag/latest)，下载入口固定不变；只改 `pc/` 脚本或文档不会触发编译
-- **正式版本**：打 `v*` 标签自动发布对应 Release：`git tag v1.0.1 && git push origin v1.0.1`（发布前记得递增 `versionCode`）
+省额度设计：**只在打 `v*` 标签时编译一次**，同一个产物同时更新正式 Release 和 [latest 预发布](https://github.com/k08255-lxm/TextRelay/releases/tag/latest)；平时提交代码不会触发任何构建。
+
+- **发新版**：递增 `versionCode` → `git tag v1.0.2 && git push origin v1.0.2` → Actions 编译一次 → 正式 Release 与 latest 同步更新
 - CI 产出的 APK 与本机构建**使用同一把签名密钥**（密钥经仓库 Secrets `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 注入，不进代码库），可直接互相覆盖安装
-- 工作流：[build-latest.yml](.github/workflows/build-latest.yml)（latest）/ [release.yml](.github/workflows/release.yml)（正式版），均支持在 Actions 页面手动触发
+- 工作流：[release.yml](.github/workflows/release.yml)，也支持在 Actions 页面手动触发
 
 ## 构建与安装
 
