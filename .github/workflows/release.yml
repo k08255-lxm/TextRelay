@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史来生成两个标签之间的更新日志
 
       - uses: actions/setup-java@v4
         with:
@@ -52,10 +54,30 @@ jobs:
           echo "APK=dist/TextRelay-${VERSION}.apk" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      - name: Build release notes
+        run: |
+          CUR="$GITHUB_REF_NAME"
+          PREV=$(git tag --sort=-creatordate | grep -v '^latest$' | sed -n '2p')
+          {
+            echo "## 更新内容"
+            if [ -n "$PREV" ]; then
+              git log --no-decorate --pretty=format:"- %s (%h)" "$PREV..$CUR"
+              echo ""
+              echo ""
+              echo "**完整变更**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${CUR}"
+            else
+              git log --no-decorate --pretty=format:"- %s (%h)" "$CUR" | head -30
+            fi
+            echo ""
+            echo "---"
+            echo "版本：versionName ${VERSION} · 签名与历史版本一致，可直接覆盖安装（versionCode 未变时需先卸载）。"
+          } > release_notes.md
+          cat release_notes.md
+
       - name: Create versioned release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" "$APK" \
             --title "TextRelay $GITHUB_REF_NAME" \
-            --notes "自动构建的正式发布（versionName ${VERSION}）。签名与历史版本一致，可直接覆盖升级；versionCode 未变时需先卸载。"
+            --notes-file release_notes.md
