@@ -58,7 +58,10 @@ class MainViewModel : ViewModel() {
             Prefs.lastUpdateCheck = System.currentTimeMillis()
             when (val r = UpdateChecker.check()) {
                 is UpdateResult.Update ->
-                    _updateEvent.value = UpdateEvent(r.version, r.pageUrl, r.notes)
+                    _updateEvent.value = UpdateEvent(
+                        r.version, r.pageUrl,
+                        r.notes?.let { UpdateChecker.plainNotes(it) }
+                    )
                 UpdateResult.UpToDate ->
                     if (manual) _updateEvent.value = UpdateEvent(null)
                 is UpdateResult.Failed ->

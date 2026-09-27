@@ -31,6 +31,7 @@ object MessageStore {
     // 单条删除记录墓碑 id，同理
     private var clearedBefore = 0L
     private val tombstones = LinkedHashSet<String>()
+    private var rev = 0L   // 存储修订号：任何增删都会 +1（网页轮询据此全量重拉）
 
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages
@@ -180,8 +181,14 @@ object MessageStore {
     }
 
     private fun publishLocked() {
+        rev += 1
         _messages.value = byId.values.sortedWith(compareBy<Message> { it.ts }.thenBy { it.id })
     }
+
+    /** 存储修订号：网页端据此感知远端的增删并全量重拉 */
+    fun revision(): Long = synchronized(lock) { rev }
+
+    fun count(): Int = synchronized(lock) { byId.size }
 
     private fun persistAppend(list: List<Message>) {
         scope.launch(Dispatchers.IO) {

@@ -372,8 +372,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._json_response({"ok": True, "queued": True})
             return
 
-        with lock:
-            target = current
+        # 统一走 pick_target：动态发现的设备优先，--phone 手动设备兜底
+        target = pick_target()
         if not target:
             if method == "DELETE":
                 # 电脑不保存消息；远端手机也不在线时无记录可删，直接确认

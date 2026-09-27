@@ -47,6 +47,9 @@ object HttpApi {
                         .put("ips", JSONArray(NetworkUtils.localIps()))
                 )
 
+            uri == "/api/messages/count" && method == NanoHTTPD.Method.GET ->
+                json(JSONObject().put("rev", MessageStore.revision()).put("count", MessageStore.count()))
+
             uri == "/api/messages" && method == NanoHTTPD.Method.GET -> {
                 val since = session.parameters["since"]?.firstOrNull()?.toLongOrNull() ?: 0L
                 // 回看一个重叠窗口，容忍设备间时钟误差，接收方按 id 去重

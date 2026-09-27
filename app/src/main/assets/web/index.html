@@ -61,7 +61,7 @@ button:disabled{opacity:.4;cursor:default}
     </div>
     <div id="status"></div>
   </div>
-  <div class="listhead"><button id="clearall" hidden>清空全部记录</button></div>
+  <div class="listhead"><button id="clearall">清空全部记录</button></div>
   <div id="list"></div>
   <div id="empty">还没有消息<br>发送后，所有在线设备都会收到；手机不在线时自动暂存</div>
 </main>
@@ -69,7 +69,7 @@ button:disabled{opacity:.4;cursor:default}
 const list=document.getElementById('list'),empty=document.getElementById('empty'),
       input=document.getElementById('input'),sendBtn=document.getElementById('send'),
       devEl=document.getElementById('dev');
-let msgs=[],seen=new Set(),lastTs=0,dirty=false,myId=null;
+let msgs=[],seen=new Set(),lastTs=0,dirty=false,myId=null,lastRev=null;
 
 input.addEventListener('input',()=>{sendBtn.disabled=!input.value.trim();});
 
@@ -115,7 +115,7 @@ function fmt(ts){
 }
 function render(){
   if(!dirty)return; dirty=false;
-  document.getElementById('clearall').hidden = msgs.length===0;
+  document.getElementById('clearall').disabled = msgs.length===0;
   list.innerHTML=msgs.map(m=>{
     const who=(myId&&m.sid===myId)?'我':esc(m.name);
     return `<div class="msg"><div class="head"><span class="who">${who}</span>`+
@@ -138,7 +138,7 @@ list.addEventListener('click',async e=>{
 document.getElementById('clearall').addEventListener('click',async()=>{
   if(!msgs.length || !confirm('确定清空全部消息记录？（仅清除保存这些消息的设备，其他设备不受影响）')) return;
   try{ await fetch('/api/messages',{method:'DELETE'}); }catch(err){}
-  msgs=[]; seen.clear(); dirty=true; render();
+  msgs=[]; seen.clear(); lastRev=null; dirty=true; render(); await poll();
 });
 
 /* 连接状态：经 PC 工具打开时显示是否连上手机；直接用手机 IP 打开时显示手机名 */
@@ -161,7 +161,24 @@ async function refreshStatus(){
   }
 }
 
+async function fullSync(){
+  try{
+    const arr=await (await fetch('/api/messages?since=0')).json();
+    msgs=Array.isArray(arr)?arr:[];
+    seen=new Set(msgs.map(m=>m.id));
+    lastTs=msgs.length?msgs[msgs.length-1].ts:0;
+    dirty=true; render();
+  }catch(e){}
+}
 async function poll(){
+  // 服务端修订号变化（增删/清空）→ 全量重拉，保证手机上的删除能同步到网页
+  try{
+    const cj=await (await fetch('/api/messages/count')).json();
+    if(typeof cj.rev==='number'){
+      if(lastRev===null){ lastRev=cj.rev; }
+      else if(cj.rev!==lastRev){ lastRev=cj.rev; await fullSync(); return; }
+    }
+  }catch(e){}
   try{
     const r=await fetch('/api/messages?since='+lastTs);
     const arr=await r.json();

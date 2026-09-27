@@ -78,4 +78,14 @@ object UpdateChecker {
         }
         return false
     }
+
+    /** 把 Release 的 Markdown 说明转成纯文本（弹窗展示用） */
+    fun plainNotes(md: String): String = md
+        .replace(Regex("(?m)^#{1,6}\\s*"), "")
+        .replace("**", "")
+        .replace(Regex("`([^`]*)`"), "$1")
+        .replace(Regex("\\[([^\\]]*)\\]\\(([^)]*)\\)"), "$1")
+        .replace(Regex("(?m)^\\s*[-*]\\s+"), "· ")
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .trim()
 }
