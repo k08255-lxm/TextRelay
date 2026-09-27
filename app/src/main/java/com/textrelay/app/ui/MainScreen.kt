@@ -1,5 +1,7 @@
 package com.textrelay.app.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -52,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -74,6 +78,7 @@ fun MainScreen(vm: MainViewModel) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val ctx = LocalContext.current
     val messages by vm.messages.collectAsStateWithLifecycle()
     val peers by vm.peers.collectAsStateWithLifecycle()
     val self by vm.self.collectAsStateWithLifecycle()
@@ -100,6 +105,9 @@ fun MainScreen(vm: MainViewModel) {
             TopAppBar(
                 title = { Text("文字互传") },
                 actions = {
+                    IconButton(onClick = { vm.checkUpdate(manual = true) }) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "检查更新")
+                    }
                     val online = peers.values.count { it.isOnline() }
                     BadgedBox(badge = { if (online > 0) Badge { Text(online.toString()) } }) {
                         IconButton(onClick = { showPeers = true }) {
@@ -155,6 +163,48 @@ fun MainScreen(vm: MainViewModel) {
 
     if (showPeers) {
         PeersDialog(vm = vm, onDismiss = { showPeers = false }, onCopy = { copy(it) })
+    }
+
+    val updateEvent by vm.updateEvent.collectAsStateWithLifecycle()
+    updateEvent?.let { ev ->
+        AlertDialog(
+            onDismissRequest = { vm.consumeUpdateEvent() },
+            title = {
+                Text(
+                    when {
+                        ev.newVersion != null -> "发现新版本 v${ev.newVersion}"
+                        ev.failed -> "检查更新失败"
+                        else -> "已是最新版本"
+                    }
+                )
+            },
+            text = {
+                Text(
+                    when {
+                        ev.newVersion != null ->
+                            (ev.notes?.take(600)?.trim() ?: "") +
+                                "\n\n点击「打开下载页」前往浏览器下载新 APK。"
+                        ev.failed -> "网络不可用或无法访问 GitHub，请稍后再试。"
+                        else -> "当前已是最新版本。"
+                    }
+                )
+            },
+            confirmButton = {
+                if (ev.newVersion != null) {
+                    TextButton(onClick = {
+                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ev.pageUrl)))
+                        vm.consumeUpdateEvent()
+                    }) { Text("打开下载页") }
+                } else {
+                    TextButton(onClick = { vm.consumeUpdateEvent() }) { Text("好的") }
+                }
+            },
+            dismissButton = if (ev.newVersion != null) {
+                {
+                    TextButton(onClick = { vm.consumeUpdateEvent() }) { Text("下次再说") }
+                }
+            } else null
+        )
     }
 }
 

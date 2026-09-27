@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
         }
         RelayService.start(this)
         handleSendIntent(intent)
+        vm.autoCheckUpdate()   // 启动时静默检查更新（24h 节流）
         setContent {
             TextRelayTheme {
                 MainScreen(vm)

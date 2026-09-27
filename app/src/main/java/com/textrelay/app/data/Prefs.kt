@@ -10,6 +10,7 @@ object Prefs {
     private const val KEY_ID = "device_id"
     private const val KEY_NAME = "device_name"
     private const val KEY_MANUAL = "manual_peers"
+    private const val KEY_LAST_UPDATE_CHECK = "last_update_check"
 
     private lateinit var sp: SharedPreferences
 
@@ -43,4 +44,9 @@ object Prefs {
         sp.edit().putStringSet(KEY_MANUAL, manualPeers() - ip).apply()
         PeerRegistry.refreshManual()
     }
+
+    /** 上次自动检查更新的时间戳（24 小时节流用） */
+    var lastUpdateCheck: Long
+        get() = sp.getLong(KEY_LAST_UPDATE_CHECK, 0L)
+        set(value) = sp.edit().putLong(KEY_LAST_UPDATE_CHECK, value).apply()
 }
