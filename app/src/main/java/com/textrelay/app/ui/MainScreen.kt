@@ -1,7 +1,6 @@
 package com.textrelay.app.ui
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -179,6 +178,7 @@ fun MainScreen(vm: MainViewModel) {
     }
 
     val updateEvent by vm.updateEvent.collectAsStateWithLifecycle()
+    val download by vm.download.collectAsStateWithLifecycle()
     updateEvent?.let { ev ->
         AlertDialog(
             onDismissRequest = { vm.consumeUpdateEvent() },
@@ -192,29 +192,42 @@ fun MainScreen(vm: MainViewModel) {
                 )
             },
             text = {
-                Text(
-                    when {
-                        ev.newVersion != null ->
-                            (ev.notes?.take(600)?.trim() ?: "") +
-                                "\n\n点击「打开下载页」前往浏览器下载新 APK。"
-                        ev.failed -> "检查失败：${ev.reason ?: "未知原因"}。\n若使用了代理/VPN，请确认已开启后重试。"
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(when {
+                        ev.newVersion != null -> ev.notes?.take(600)?.trim().orEmpty().ifBlank { "此版本包含改进和问题修复。" }
+                        ev.failed -> "检查失败：${ev.reason ?: "未知原因"}。"
                         else -> "当前已是最新版本。"
+                    })
+                    if (ev.newVersion != null && download.running) {
+                        val label = if (download.total > 0) "正在下载 ${(download.received * 100 / download.total).coerceIn(0, 100)}%" else "正在下载…"
+                        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        if (download.total > 0) {
+                            LinearProgressIndicator(
+                                progress = { (download.received.toFloat() / download.total).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
                     }
-                )
+                    download.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    if (download.file != null && !download.running) {
+                        Text("安装包已下载完成，可以开始安装。", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             },
             confirmButton = {
                 if (ev.newVersion != null) {
-                    TextButton(onClick = {
-                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ev.pageUrl)))
-                        vm.consumeUpdateEvent()
-                    }) { Text("打开下载页") }
+                    TextButton(enabled = !download.running, onClick = {
+                        if (download.file != null) vm.installUpdate(ctx) else vm.downloadUpdate(ctx)
+                    }) { Text(if (download.file != null) "安装" else if (download.error != null) "重新下载" else "下载更新") }
                 } else {
                     TextButton(onClick = { vm.consumeUpdateEvent() }) { Text("好的") }
                 }
             },
             dismissButton = if (ev.newVersion != null) {
                 {
-                    TextButton(onClick = { vm.consumeUpdateEvent() }) { Text("下次再说") }
+                    TextButton(onClick = { vm.consumeUpdateEvent() }) { Text(if (download.running) "取消下载" else "下次再说") }
                 }
             } else null
         )

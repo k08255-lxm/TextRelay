@@ -11,7 +11,7 @@ import java.net.SocketTimeoutException
 import java.net.URL
 
 sealed interface UpdateResult {
-    data class Update(val version: String, val pageUrl: String, val notes: String?) : UpdateResult
+    data class Update(val version: String, val pageUrl: String, val notes: String?, val apkUrl: String) : UpdateResult
     data object UpToDate : UpdateResult
     data class Failed(val reason: String) : UpdateResult
 }
@@ -100,7 +100,16 @@ object UpdateChecker {
         val pageUrl = json.optString("html_url", FALLBACK_URL)
         val notes = json.optString("body").takeIf { it.isNotBlank() }
         return if (isNewer(tagName, BuildConfig.VERSION_NAME)) {
-            UpdateResult.Update(tagName, pageUrl, notes)
+            val assets = json.optJSONArray("assets")
+            val apkUrl = (0 until (assets?.length() ?: 0)).asSequence()
+                .mapNotNull { assets?.optJSONObject(it) }
+                .firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }
+                ?.optString("browser_download_url")?.takeIf { it.startsWith("https://") }
+                // Release workflow names its asset TextRelay-{version}.apk.
+                ?: "https://github.com/k08255-lxm/TextRelay/releases/download/" +
+                    android.net.Uri.encode(json.optString("tag_name")) +
+                    "/TextRelay-${android.net.Uri.encode(tagName)}.apk"
+            UpdateResult.Update(tagName, pageUrl, notes, apkUrl)
         } else {
             UpdateResult.UpToDate
         }
