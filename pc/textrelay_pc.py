@@ -43,9 +43,10 @@ ONLINE_TIMEOUT = 15   # 超过 15 秒没有信标视为离线
 MAX_BODY = 1 * 1024 * 1024      # 请求体上限 1MB
 MAX_RESPONSE = 5 * 1024 * 1024  # 响应体上限 5MB
 OUTBOX_FILE = os.path.join(os.path.expanduser("~"), ".textrelay", "outbox")
+PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
 
-# 只转发文字互传 APP 的接口
-ALLOWED_PATHS = {"/", "/index.html", "/api/info", "/api/messages", "/api/send", "/push"}
+# 只转发文字互传 APP 的接口（页面与状态由本机直接提供，不依赖手机）
+ALLOWED_PATHS = {"/", "/index.html", "/__relay/status", "/api/info", "/api/messages", "/api/send", "/push"}
 
 devices = {}          # ip -> {"name":..., "port":..., "last":...}
 lock = threading.Lock()
@@ -188,6 +189,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._error_page(404, "接口不存在")
             return
 
+        # 本地页面与连接状态：不依赖手机，离线也能打开并使用
+        if path in ("/", "/index.html") and method == "GET":
+            self._serve_page()
+            return
+        if path == "/__relay/status" and method == "GET":
+            self._serve_status()
+            return
+
         # 发送接口：手机不在线或转发失败时，落到本地发件箱
         if path == "/api/send" and method == "POST":
             length = int(self.headers.get("Content-Length", 0) or 0)
@@ -253,6 +262,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f"连接手机失败：{e}\n\n手机可能刚锁屏或切了网络，几秒后会自动恢复；"
                 "也可刷新本页重试。",
             )
+
+    def _serve_page(self):
+        """本机直接提供网页，手机不在线也能打开输入框"""
+        try:
+            with open(PAGE_FILE, "rb") as f:
+                data = f.read()
+        except Exception:
+            data = ("<!doctype html><meta charset='utf-8'>"
+                    "<body style=\"font-family:system-ui;padding:40px\">"
+                    "缺少 index.html，请重新获取 PC 端文件</body>").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_status(self):
+        target = pick_target()
+        device = None
+        if target:
+            with lock:
+                info = devices.get(target[0])
+            device = (info or {}).get("name") or f"{target[0]}:{target[1]}"
+        self._json_response({"ok": True, "connected": target is not None, "device": device})
 
     def _forward_send(self, text) -> bool:
         """有手机在线时转发发送；返回是否成功"""

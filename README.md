@@ -85,6 +85,7 @@ app/src/main/java/com/textrelay/app/
 
 pc/
 ├─ textrelay_pc.py         PC 端：UDP 自动发现 + 127.0.0.1 反向代理 + 离线暂存（纯标准库）
+├─ index.html              与手机端内置网页同源（改动需同步 app/src/main/assets/web/）
 ├─ outbox_store.py         离线发件箱持久化（dbm 键值库，~/.textrelay/outbox）
 └─ 启动文字互传.bat         双击启动（支持透传参数，如 --phone IP）
 ```
