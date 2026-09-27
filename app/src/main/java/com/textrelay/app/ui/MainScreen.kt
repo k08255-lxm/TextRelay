@@ -2,71 +2,39 @@ package com.textrelay.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.Devices
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.textrelay.app.MainViewModel
-import com.textrelay.app.R
 import com.textrelay.app.data.Message
 import com.textrelay.app.data.Prefs
 import com.textrelay.app.relay.PeerRegistry
@@ -89,125 +57,124 @@ fun MainScreen(vm: MainViewModel) {
     val self by vm.self.collectAsStateWithLifecycle()
     val draft by vm.draft.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
-    var showPeers by remember { mutableStateOf(false) }
-    var showClearConfirm by remember { mutableStateOf(false) }
+    var showPeers by rememberSaveable { mutableStateOf(false) }
+    var showClearConfirm by rememberSaveable { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<Message?>(null) }
+    var scrollAfterSend by remember { mutableStateOf(false) }
     val myId = Prefs.deviceId
+    val online = peers.values.count { it.isOnline() }
+    val cs = MaterialTheme.colorScheme
 
+    fun notice(text: String) { scope.launch { snackbar.showSnackbar(text) } }
     fun copy(text: String) {
         clipboard.setText(AnnotatedString(text))
-        scope.launch { snackbar.showSnackbar("已复制到剪贴板") }
+        notice("已复制到剪贴板")
     }
 
-    LaunchedEffect(messages.size) {
+    // Follow new messages only at the bottom, so incoming text never interrupts reading.
+    var previousCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(messages.lastOrNull()?.id) {
         if (messages.isNotEmpty()) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (lastVisible >= messages.size - 2) listState.animateScrollToItem(messages.size - 1)
+            if (previousCount == 0 || scrollAfterSend || lastVisible >= previousCount) {
+                listState.scrollToItem(messages.size + 1) // connection + section heading
+            }
         }
+        previousCount = messages.size
+        scrollAfterSend = false
     }
 
     Scaffold(
+        containerColor = cs.background,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("文字互传", style = MaterialTheme.typography.titleLarge)
-                        val onlineN = peers.values.count { it.isOnline() }
-                        val ipStr = self.ips.firstOrNull()
-                        Text(
-                            text = buildString {
-                                append(if (onlineN > 0) "局域网在线 $onlineN 台设备" else "等待设备上线…")
-                                if (ipStr != null) append(" · $ipStr")
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showClearConfirm = true }) {
-                        Icon(Icons.Outlined.Delete, contentDescription = "清空本机消息")
-                    }
-                    IconButton(onClick = { vm.checkUpdate(manual = true) }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "检查更新")
-                    }
-                    val online = peers.values.count { it.isOnline() }
-                    BadgedBox(badge = { if (online > 0) Badge { Text(online.toString()) } }) {
-                        IconButton(onClick = { showPeers = true }) {
-                            Icon(Icons.Filled.Devices, contentDescription = "设备")
-                        }
+            Row(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconTile(Icons.Outlined.SyncAlt, prominent = true)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("文字互传", style = MaterialTheme.typography.titleLarge)
+                    Text("TextRelay · 随手传，自在用", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                }
+                IconButton(onClick = { showPeers = true }) {
+                    Icon(Icons.Outlined.Devices, "设备与连接")
+                }
+                Box {
+                    IconButton(onClick = { showMenu = true }) { Icon(Icons.Outlined.MoreHoriz, "更多操作") }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(text = { Text("检查更新") }, leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
+                            onClick = { showMenu = false; vm.checkUpdate(manual = true) })
+                        DropdownMenuItem(text = { Text("清空本机记录", color = cs.error) },
+                            leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = cs.error) },
+                            enabled = messages.isNotEmpty(), onClick = { showMenu = false; showClearConfirm = true })
                     }
                 }
-            )
+            }
+        },
+        bottomBar = {
+            Box(Modifier.fillMaxWidth().navigationBarsPadding().imePadding(), contentAlignment = Alignment.Center) {
+                SendComposer(
+                    draft = draft, onDraftChange = vm::setDraft,
+                    onPaste = {
+                        val text = clipboard.getText()?.toString()
+                        if (!text.isNullOrBlank()) vm.setDraft(text.trim()) else notice("剪贴板里还没有文字")
+                    },
+                    onSend = {
+                        scrollAfterSend = true
+                        vm.send()
+                        notice("已发送，离线设备上线后自动接收")
+                    },
+                    modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                )
+            }
         }
     ) { pad ->
-        Column(
-            Modifier
-                .padding(pad)
-                .fillMaxSize()
-                .imePadding()
-        ) {
-            StatusCard(
-                self = self,
-                onlineCount = peers.values.count { it.isOnline() },
-                onCopyWeb = { ip -> copy("http://$ip:${self.port}") }
-            )
-            SendCard(
-                draft = draft,
-                onDraftChange = vm::setDraft,
-                onPaste = {
-                    val text = clipboard.getText()?.toString()
-                    if (!text.isNullOrBlank()) vm.setDraft(text.trim())
-                },
-                onSend = {
-                    vm.send()
-                    scope.launch { snackbar.showSnackbar("已发送，离线设备上线后自动接收") }
+        Box(Modifier.fillMaxSize().padding(pad).consumeWindowInsets(pad), contentAlignment = Alignment.TopCenter) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.widthIn(max = 760.dp).fillMaxSize(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item(key = "connection") { ConnectionCard(self, online, onOpen = { showPeers = true }) }
+                item(key = "heading") {
+                    Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("最近的文字", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text("保留 24 小时", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                    }
                 }
-            )
-            if (messages.isEmpty()) {
-                EmptyState(self)
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 16.dp)
-                ) {
-                    items(messages, key = { it.id }) { m ->
-                        MessageCard(
-                            message = m,
-                            mine = m.senderId == myId,
-                            onCopy = { copy(m.text) },
-                            onDelete = {
-                                vm.deleteMessage(m.id)
-                                scope.launch { snackbar.showSnackbar("已删除") }
-                            }
-                        )
+                if (messages.isEmpty()) {
+                    item(key = "empty") { EmptyState(onConnect = { showPeers = true }) }
+                } else {
+                    items(messages, key = { it.id }) { message ->
+                        MessageCard(message, message.senderId == myId,
+                            onCopy = { copy(message.text) }, onDelete = { pendingDelete = message })
                     }
                 }
             }
         }
     }
 
-    if (showPeers) {
-        PeersDialog(vm = vm, onDismiss = { showPeers = false }, onCopy = { copy(it) })
-    }
-
-    if (showClearConfirm) {
+    if (showPeers) PeersSheet(vm, onDismiss = { showPeers = false }, onCopy = ::copy)
+    if (showClearConfirm || pendingDelete != null) {
+        val all = showClearConfirm
         AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
-            title = { Text("清空本机全部消息？") },
-            text = { Text("将从本机删除全部记录；已删除的内容不会被其他设备重新同步过来（其他设备保留它们自己的记录）。") },
+            onDismissRequest = { showClearConfirm = false; pendingDelete = null },
+            icon = { Icon(Icons.Outlined.DeleteOutline, null, tint = cs.error) },
+            title = { Text(if (all) "清空本机记录？" else "删除这条文字？") },
+            text = { Text("仅删除本机内容，其他设备保留各自的记录。删除后不会再次同步到本机。") },
             confirmButton = {
                 TextButton(onClick = {
+                    if (all) vm.clearMessages() else pendingDelete?.let { vm.deleteMessage(it.id) }
                     showClearConfirm = false
-                    vm.clearMessages()
-                    scope.launch { snackbar.showSnackbar("已清空本机消息") }
-                }) { Text("清空") }
+                    pendingDelete = null
+                    notice(if (all) "已清空本机记录" else "已删除")
+                }, colors = ButtonDefaults.textButtonColors(contentColor = cs.error)) { Text("确认删除") }
             },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
-            }
+            dismissButton = { TextButton(onClick = { showClearConfirm = false; pendingDelete = null }) { Text("保留") } }
         )
     }
 
@@ -254,77 +221,65 @@ fun MainScreen(vm: MainViewModel) {
     }
 }
 
+
 @Composable
-private fun StatusCard(
-    self: PeerRegistry.SelfInfo,
-    onlineCount: Int,
-    onCopyWeb: (String) -> Unit
-) {
+private fun IconTile(icon: ImageVector, prominent: Boolean = false) {
     val cs = MaterialTheme.colorScheme
-    val ip = self.ips.firstOrNull()
-    ElevatedCard(modifier = Modifier
-        .fillMaxWidth()
-        .padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Text("本机：${self.name}", style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.size(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = if (ip != null) "网页版：http://$ip:${self.port}" else "未连接局域网",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = cs.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                if (ip != null) {
-                    IconButton(onClick = { onCopyWeb(ip) }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Filled.ContentCopy, "复制网址", modifier = Modifier.size(16.dp))
-                    }
+    Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp))
+        .background(if (prominent) cs.primary else cs.primaryContainer), contentAlignment = Alignment.Center) {
+        Icon(icon, null, Modifier.size(23.dp), tint = if (prominent) cs.onPrimary else cs.onPrimaryContainer)
+    }
+}
+
+@Composable
+private fun ConnectionCard(self: PeerRegistry.SelfInfo, online: Int, onOpen: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(onClick = onOpen, shape = MaterialTheme.shapes.large, color = cs.primaryContainer) {
+        Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(cs.onPrimaryContainer))
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (self.ips.isEmpty()) "连接到同一 Wi-Fi 即可开始" else if (online == 0) "等待另一台设备" else "$online 台设备在线",
+                        style = MaterialTheme.typography.labelLarge, color = cs.onPrimaryContainer)
                 }
+                Text(if (self.ips.isEmpty()) "文字会先保存在这台设备上" else "${self.name.ifBlank { "本机" }} · ${self.ips.first()}",
+                    style = MaterialTheme.typography.bodySmall, color = cs.onPrimaryContainer,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            Text(
-                text = if (onlineCount > 0) "局域网内 $onlineCount 台设备在线，新设备上线自动同步"
-                else "暂未发现其他设备 · 对方上线后会自动收到消息",
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant
-            )
+            Spacer(Modifier.width(12.dp))
+            Icon(Icons.Outlined.ChevronRight, null, tint = cs.onPrimaryContainer)
         }
     }
 }
 
 @Composable
-private fun SendCard(
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    onPaste: () -> Unit,
-    onSend: () -> Unit
-) {
-    Card(modifier = Modifier
-        .fillMaxWidth()
-        .padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Column(Modifier.padding(12.dp)) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = onDraftChange,
+private fun SendComposer(draft: String, onDraftChange: (String) -> Unit, onPaste: () -> Unit, onSend: () -> Unit, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    Surface(modifier.padding(horizontal = 16.dp, vertical = 8.dp), shape = MaterialTheme.shapes.large,
+        color = cs.surface, border = BorderStroke(1.dp, cs.outlineVariant), shadowElevation = 2.dp) {
+        Column(Modifier.padding(8.dp)) {
+            TextField(
+                value = draft, onValueChange = onDraftChange,
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("输入要发送的文字…") },
-                minLines = 2,
-                maxLines = 6
+                placeholder = { Text("写点什么，传到另一台设备…", style = MaterialTheme.typography.bodyLarge) },
+                minLines = 1, maxLines = 3,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent
+                )
             )
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onPaste) {
-                    Icon(Icons.Filled.ContentPaste, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("粘贴")
+                    Icon(Icons.Outlined.ContentPaste, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp)); Text("粘贴")
                 }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = onSend, enabled = draft.isNotBlank()) {
-                    Icon(Icons.AutoMirrored.Filled.Send, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onSend, enabled = draft.isNotBlank(), shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp)) {
                     Text("发送")
+                    Spacer(Modifier.width(8.dp))
+                    Icon(Icons.AutoMirrored.Outlined.Send, null, Modifier.size(18.dp))
                 }
             }
         }
@@ -334,60 +289,33 @@ private fun SendCard(
 @Composable
 private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit, onDelete: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (mine) cs.secondaryContainer else cs.surfaceContainerHighest
-        )
-    ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+    var menu by remember { mutableStateOf(false) }
+    Surface(shape = MaterialTheme.shapes.medium, color = cs.surface, border = BorderStroke(1.dp, cs.outlineVariant.copy(alpha = 0.6f))) {
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(if (mine) cs.secondaryContainer else cs.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = (if (mine) "我" else message.senderName).take(1),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (mine) cs.onSecondaryContainer else cs.onPrimaryContainer
-                    )
-                }
+                Icon(if (mine) Icons.Outlined.NorthEast else Icons.Outlined.SouthWest, null,
+                    Modifier.size(16.dp), tint = cs.primary)
+                Spacer(Modifier.width(7.dp))
+                Text(if (mine) "来自本机" else message.senderName, style = MaterialTheme.typography.labelMedium,
+                    color = cs.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (mine) "我" else message.senderName,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (mine) cs.onSecondaryContainer else cs.primary,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = formatTime(message.ts),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.onSurfaceVariant
-                )
+                Text(formatTime(message.ts), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
             }
-            Spacer(Modifier.size(4.dp))
-            SelectionContainer {
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = if (mine) cs.onSecondaryContainer else cs.onSurface
-                )
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onCopy) {
-                    Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("复制")
+            Spacer(Modifier.height(10.dp))
+            SelectionContainer { Text(message.text, style = MaterialTheme.typography.bodyLarge, color = cs.onSurface) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreHoriz, "文字操作", Modifier.size(20.dp), tint = cs.onSurfaceVariant) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("从本机删除", color = cs.error) },
+                            leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = cs.error) },
+                            onClick = { menu = false; onDelete() })
+                    }
                 }
-                TextButton(onClick = onDelete) {
-                    Icon(Icons.Outlined.Delete, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("删除")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onCopy) {
+                    Icon(Icons.Outlined.ContentCopy, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp)); Text("复制文字")
                 }
             }
         }
@@ -395,160 +323,130 @@ private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit, onD
 }
 
 @Composable
-private fun EmptyState(self: PeerRegistry.SelfInfo) {
+private fun EmptyState(onConnect: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val ip = self.ips.firstOrNull()
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            Icons.Filled.Devices, null,
-            modifier = Modifier.size(48.dp),
-            tint = cs.onSurfaceVariant
-        )
-        Spacer(Modifier.size(12.dp))
-        Text("还没有消息", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.size(4.dp))
-        Text(
-            text = if (ip != null)
-                "在本机发送文字，局域网内设备都会收到；\n电脑也可用浏览器打开 http://$ip:${self.port} 发送与复制"
-            else "连接到局域网后即可互传文字",
-            style = MaterialTheme.typography.bodyMedium,
-            color = cs.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            IconTile(Icons.Outlined.Smartphone)
+            Icon(Icons.Outlined.SyncAlt, null, tint = cs.primary, modifier = Modifier.size(24.dp))
+            IconTile(Icons.Outlined.LaptopMac)
+        }
+        Spacer(Modifier.height(24.dp))
+        Text("让文字，流动起来", style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(10.dp))
+        Text("一段灵感，一个链接。\n在这里发送，在另一台设备继续。", style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center, color = cs.onSurfaceVariant)
+        Spacer(Modifier.height(16.dp))
+        TextButton(onClick = onConnect) { Text("连接我的设备"); Spacer(Modifier.width(4.dp)); Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp)) }
+        Spacer(Modifier.height(8.dp))
+        Text("同一局域网 · 无需账号", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PeersSheet(vm: MainViewModel, onDismiss: () -> Unit, onCopy: (String) -> Unit) {
+    val peers by vm.peers.collectAsStateWithLifecycle()
+    val self by vm.self.collectAsStateWithLifecycle()
+    var name by rememberSaveable { mutableStateOf(Prefs.name) }
+    var ipInput by rememberSaveable { mutableStateOf("") }
+    var ipError by rememberSaveable { mutableStateOf(false) }
+    var nameSaved by rememberSaveable { mutableStateOf(false) }
+    val online = peers.values.filter { it.isOnline() }.sortedByDescending { it.lastSeen }
+    val manual = peers.values.filter { it.manual }.sortedBy { it.ip }
+    val cs = MaterialTheme.colorScheme
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = cs.background) {
+        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("设备与连接", style = MaterialTheme.typography.headlineMedium)
+                    Text("让你的设备，在同一网络相遇", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, "关闭设备面板") }
+            }
+            DeviceSection("这台设备", Icons.Outlined.Smartphone) {
+                OutlinedTextField(value = name, onValueChange = { name = it; nameSaved = false },
+                    label = { Text("设备名称") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(enabled = name.isNotBlank() && name.trim() != self.name, onClick = { Prefs.name = name.trim(); nameSaved = true }) {
+                        Text(if (nameSaved) "已保存" else "保存名称")
+                    }
+                }
+                self.ips.firstOrNull()?.let { ip ->
+                    HorizontalDivider(color = cs.outlineVariant)
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("电脑浏览器访问", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                            Text("http://$ip:${self.port}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                        }
+                        IconButton(onClick = { onCopy("http://$ip:${self.port}") }) { Icon(Icons.Outlined.ContentCopy, "复制网页版地址", Modifier.size(20.dp)) }
+                    }
+                }
+            }
+            DeviceSection("附近设备 · ${online.size}", Icons.Outlined.Devices) {
+                if (online.isEmpty()) {
+                    Text("还没有发现其他设备", style = MaterialTheme.typography.titleSmall)
+                    Text("在另一台设备打开文字互传，并连接同一 Wi-Fi。上线后会自动同步。",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                }
+                online.forEachIndexed { index, peer ->
+                    if (index > 0) HorizontalDivider(Modifier.padding(vertical = 10.dp), color = cs.outlineVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(peer.name, style = MaterialTheme.typography.titleSmall)
+                            Text("${peer.ip}:${peer.port}", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                        }
+                        Text("在线", style = MaterialTheme.typography.labelMedium, color = cs.primary)
+                    }
+                }
+            }
+            DeviceSection("手动连接", Icons.Outlined.AddLink) {
+                Text("找不到设备？输入对方的局域网 IP 地址。", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                OutlinedTextField(value = ipInput, onValueChange = { ipInput = it; ipError = false },
+                    label = { Text("IP 地址") }, placeholder = { Text("192.168.1.100") },
+                    singleLine = true, isError = ipError,
+                    supportingText = if (ipError) { { Text("请输入有效的 IPv4 地址") } } else null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                Button(onClick = {
+                    val ip = ipInput.trim()
+                    val parts = ip.split('.')
+                    val valid = parts.size == 4 && parts.all { part ->
+                        part.isNotEmpty() && part.all { it in '0'..'9' } && part.toIntOrNull() in 0..255
+                    }
+                    if (valid) { Prefs.addManualPeer(ip); RelayEngine.manualPoke(ip); ipInput = "" } else ipError = true
+                }, enabled = ipInput.isNotBlank(), shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Icon(Icons.Outlined.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("添加设备")
+                }
+                manual.forEach { peer ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${peer.ip}:${peer.port}", style = MaterialTheme.typography.bodyMedium)
+                            Text("已添加 · 自动尝试连接", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                        }
+                        IconButton(onClick = { Prefs.removeManualPeer(peer.ip) }) { Icon(Icons.Outlined.Close, "移除设备 ${peer.ip}", Modifier.size(18.dp)) }
+                    }
+                }
+            }
+            Text("设备离线也没关系，文字会在它上线后自动送达。", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 24.dp))
+        }
     }
 }
 
 @Composable
-private fun PeersDialog(vm: MainViewModel, onDismiss: () -> Unit, onCopy: (String) -> Unit) {
-    val peers by vm.peers.collectAsStateWithLifecycle()
-    val self by vm.self.collectAsStateWithLifecycle()
-    var name by remember { mutableStateOf(Prefs.name) }
-    var ipInput by remember { mutableStateOf("") }
-    val online = peers.values.filter { it.isOnline() }.sortedByDescending { it.lastSeen }
-    val manual = peers.values.filter { it.manual }.sortedBy { it.ip }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("设备") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "本机",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.size(6.dp))
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("设备名称") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                TextButton(onClick = {
-                    val n = name.trim()
-                    if (n.isNotEmpty()) Prefs.name = n
-                }) { Text("保存名称") }
-                val ip = self.ips.firstOrNull()
-                if (ip != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "网页版：http://$ip:${self.port}",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { onCopy("http://$ip:${self.port}") }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp))
-                        }
-                    }
-                }
-                Spacer(Modifier.size(12.dp))
-                Text(
-                    "局域网设备",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.size(4.dp))
-                if (online.isEmpty()) {
-                    Text(
-                        "未发现设备 · 确保双方在同一 Wi-Fi，或手动添加 IP",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                online.forEach { p ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(p.name, style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                "${p.ip}:${p.port} · ${lastSeenText(p.lastSeen)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.size(12.dp))
-                Text(
-                    "手动添加设备（UDP 被路由器屏蔽时）",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.size(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = ipInput,
-                        onValueChange = { ipInput = it },
-                        placeholder = { Text("对方 IP，如 192.168.1.100") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(onClick = {
-                        val ip = ipInput.trim()
-                        if (ip.isNotEmpty()) {
-                            Prefs.addManualPeer(ip)
-                            RelayEngine.manualPoke(ip)
-                            ipInput = ""
-                        }
-                    }) { Icon(Icons.Filled.Add, "添加") }
-                }
-                manual.forEach { p ->
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            "${p.ip}:${p.port}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { Prefs.removeManualPeer(p.ip) }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Filled.Close, "移除", Modifier.size(16.dp))
-                        }
-                    }
-                }
+private fun DeviceSection(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(shape = MaterialTheme.shapes.medium, color = cs.surface) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 14.dp)) {
+                Icon(icon, null, Modifier.size(19.dp), tint = cs.primary)
+                Spacer(Modifier.width(8.dp)); Text(title, style = MaterialTheme.typography.titleSmall)
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
-    )
-}
-
-private fun lastSeenText(ts: Long): String {
-    if (ts <= 0) return "未知"
-    val d = System.currentTimeMillis() - ts
-    return when {
-        d < 10_000 -> "刚刚在线"
-        d < 60_000 -> "${d / 1000}秒前在线"
-        d < 3_600_000 -> "${d / 60_000}分钟前在线"
-        else -> "更早在线"
+            content()
+        }
     }
 }
 
