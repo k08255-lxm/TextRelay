@@ -52,7 +52,8 @@ ALLOWED_PATHS = {"/", "/index.html", "/__relay/status", "/api/info", "/api/messa
 
 devices = {}          # ip -> {"name":..., "port":..., "last":...}
 lock = threading.RLock()  # 可重入：pick_target 会在持有锁时被再次调用
-current = None        # 当前转发目标 (ip, port)
+current = None        # 当前转发目标 (ip, port)，粘性：设备在线期间不切换
+OUTBOX_REV = [1_000_000]  # 暂存消息的修订号（与手机端修订号空间隔离，避免切换时撞号）
 PC_NAME = socket.gethostname() or "电脑"
 manual_devices = []   # --phone 手动指定的 (ip, port)，UDP 不可用时的兜底
 MULTICAST_GROUP = "239.255.246.80"
@@ -113,6 +114,26 @@ def pick_target():
     return manual_devices[0] if manual_devices else None
 
 
+def get_target():
+    """粘性目标：当前设备仍在线就沿用（多设备在线不来回切换），失效才切换"""
+    global current
+    now = time.time()
+    with lock:
+        info = devices.get(current[0]) if current else None
+    if current and info and now - info["last"] < ONLINE_TIMEOUT:
+        return current
+    t = pick_target()
+    if t:
+        with lock:
+            changed = current != t
+            current = t
+        if changed:
+            d = devices.get(t[0])
+            if d:
+                print(f"[✓] 已连接手机：{d['name']} ({t[0]}:{t[1]})")
+    return t
+
+
 def discover_loop():
     global current
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -148,12 +169,17 @@ def discover_loop():
                     "port": port,
                     "last": time.time(),
                 }
-                new = pick_target()
-                changed = new != current and new is not None
-                current = new
+                # 粘性切换：只有当前目标离线（或还没有目标）时才换设备，
+                # 避免多设备同时在线时转发目标来回跳
+                old = current
+                old_info = devices.get(old[0]) if old else None
+                old_online = bool(old and old_info and time.time() - old_info["last"] < ONLINE_TIMEOUT)
+                if old is None or not old_online:
+                    current = pick_target() or current
+                changed = current != old and current is not None
             if changed:
-                d = devices[new[0]]
-                print(f"[✓] 已连接手机：{d['name']} ({new[0]}:{new[1]})")
+                d = devices[current[0]]
+                print(f"[✓] 已连接手机：{d['name']} ({current[0]}:{current[1]})")
                 threading.Thread(target=flush_outbox, daemon=True).start()
         except OSError:
             continue
@@ -286,15 +312,17 @@ def scan_loop():
 
 def queue_message(text):
     """手机不在线：消息暂存本地，等手机上线后 flush_outbox 送达"""
-    count = outbox_store.append(text, PC_NAME, OUTBOX_FILE)
-    print(f"[↓] 手机不在线，已暂存第 {count} 条消息（上线后自动送达）")
+    msg = outbox_store.append(text, PC_NAME, OUTBOX_FILE)
+    OUTBOX_REV[0] += 1
+    print(f"[↓] 手机不在线，已暂存第 {len(outbox_store.load(OUTBOX_FILE))} 条消息（上线后自动送达）")
+    return msg
 
 
 def flush_outbox():
     msgs = outbox_store.load(OUTBOX_FILE)
     if not msgs:
         return
-    target = pick_target()
+    target = get_target()
     if not target:
         return
     ip, port = target
@@ -308,6 +336,7 @@ def flush_outbox():
         print(f"[!] 暂存消息送达失败（稍后自动重试）：{e}")
         return
     outbox_store.save([], OUTBOX_FILE)
+    OUTBOX_REV[0] += 1
     print(f"[✓] 已把暂存的 {len(msgs)} 条消息送达手机")
 
 
@@ -368,15 +397,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
             if self._forward_send(text):
                 return
-            queue_message(text)
-            self._json_response({"ok": True, "queued": True})
+            msg = queue_message(text)
+            self._json_response({"ok": True, "queued": True, "message": msg})
             return
 
-        # 统一走 pick_target：动态发现的设备优先，--phone 手动设备兜底
-        target = pick_target()
+        # 粘性目标（get_target）：动态发现优先、--phone 兜底、多设备在线不抖动
+        target = get_target()
         if not target:
+            # 手机不在线：暂存箱就是消息列表——列表/计数/清空/单删都作用于它
+            if path == "/api/messages" and method == "GET":
+                self._json_response(outbox_store.load(OUTBOX_FILE))
+                return
+            if path == "/api/messages/count" and method == "GET":
+                self._json_response({"rev": OUTBOX_REV[0], "count": len(outbox_store.load(OUTBOX_FILE))})
+                return
+            if path == "/api/messages" and method == "DELETE":
+                outbox_store.save([], OUTBOX_FILE)
+                OUTBOX_REV[0] += 1
+                self._json_response({"ok": True})
+                return
+            if path.startswith("/api/messages/") and method == "DELETE":
+                oid = path.rsplit("/", 1)[-1]
+                outbox_store.save(
+                    [m for m in outbox_store.load(OUTBOX_FILE) if m.get("id") != oid],
+                    OUTBOX_FILE,
+                )
+                OUTBOX_REV[0] += 1
+                self._json_response({"ok": True})
+                return
             if method == "DELETE":
-                # 电脑不保存消息；远端手机也不在线时无记录可删，直接确认
                 self._json_response({"ok": True})
                 return
             self._error_page(
@@ -448,7 +497,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _forward_send(self, text) -> bool:
         """有手机在线时转发发送；返回是否成功"""
-        target = pick_target()
+        target = get_target()
         if not target:
             return False
         ip, port = target

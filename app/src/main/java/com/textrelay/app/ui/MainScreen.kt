@@ -2,7 +2,9 @@ package com.textrelay.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -55,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -105,7 +109,22 @@ fun MainScreen(vm: MainViewModel) {
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("文字互传") },
+                title = {
+                    Column {
+                        Text("文字互传", style = MaterialTheme.typography.titleLarge)
+                        val onlineN = peers.values.count { it.isOnline() }
+                        val ipStr = self.ips.firstOrNull()
+                        Text(
+                            text = buildString {
+                                append(if (onlineN > 0) "局域网在线 $onlineN 台设备" else "等待设备上线…")
+                                if (ipStr != null) append(" · $ipStr")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                },
                 actions = {
                     IconButton(onClick = { showClearConfirm = true }) {
                         Icon(Icons.Outlined.Delete, contentDescription = "清空本机消息")
@@ -325,6 +344,20 @@ private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit, onD
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(if (mine) cs.secondaryContainer else cs.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = (if (mine) "我" else message.senderName).take(1),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (mine) cs.onSecondaryContainer else cs.onPrimaryContainer
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = if (mine) "我" else message.senderName,
                     style = MaterialTheme.typography.labelLarge,

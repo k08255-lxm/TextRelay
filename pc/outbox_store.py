@@ -55,8 +55,8 @@ def save(items: list, file_path: str) -> None:
             print(f"[!] 暂存写入失败：{e}")
 
 
-def append(text: str, sender_name: str, file_path: str) -> int:
-    """追加一条待发消息，返回当前暂存条数"""
+def append(text: str, sender_name: str, file_path: str) -> dict:
+    """追加一条待发消息，返回该消息对象"""
     msg = {
         "id": uuid.uuid4().hex,
         "sid": "pc",
@@ -67,4 +67,4 @@ def append(text: str, sender_name: str, file_path: str) -> int:
     items = load(file_path)
     items.append(msg)
     save(items, file_path)
-    return len(items)
+    return msg
