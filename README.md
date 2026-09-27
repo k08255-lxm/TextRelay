@@ -7,15 +7,16 @@
 - **手机 ↔ 手机**：双方都安装本 APP，自动发现、自动收发
 - **电脑 → 手机 / 手机 → 电脑**：电脑运行 `pc` 目录的小工具，浏览器永远只开 `http://127.0.0.1:24680`，无需找手机 IP
 - **离线补收**：发送时对方不在线也没关系，消息保存在双方本地，设备上线后自动对账补齐
+- **电脑离线也能发**：手机不在线时，电脑发出的消息暂存在本机（`~/.textrelay/outbox`），手机一上线自动送达，网页会显示「已暂存」状态
 - **方便复制**：每条消息一键复制；支持从任意应用的「分享」菜单把文字直接发出去
-- **固定签名**：debug/release 共用 `app/textrelay.keystore`，升级直接覆盖安装，无需卸载重装
+- **固定签名**：debug/release 共用一把密钥，升级直接覆盖安装，无需卸载重装
 
 ## 下载 APK（自动发布）
 
-- **最新构建**：main 分支有代码更新时，GitHub Actions 自动编译并刷新 [latest 预发布](https://github.com/k08255-lxm/TextRelay/releases/tag/latest)，下载入口固定不变
+- **最新构建**：main 分支有 **APP 相关改动**（`app/**`、Gradle 配置等）时，GitHub Actions 自动编译并刷新 [latest 预发布](https://github.com/k08255-lxm/TextRelay/releases/tag/latest)，下载入口固定不变；只改 `pc/` 脚本或文档不会触发编译
 - **正式版本**：打 `v*` 标签自动发布对应 Release：`git tag v1.0.1 && git push origin v1.0.1`（发布前记得递增 `versionCode`）
 - CI 产出的 APK 与本机构建**使用同一把签名密钥**（密钥经仓库 Secrets `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 注入，不进代码库），可直接互相覆盖安装
-- 工作流见 [.github/workflows/release.yml](.github/workflows/release.yml)，也支持在 Actions 页面手动触发
+- 工作流：[build-latest.yml](.github/workflows/build-latest.yml)（latest）/ [release.yml](.github/workflows/release.yml)（正式版），均支持在 Actions 页面手动触发
 
 ## 构建与安装
 
@@ -42,7 +43,7 @@
 
 1. 所有设备连入同一 Wi-Fi，打开 APP（通知栏会显示本机网址）
 2. 手机之间：输入文字 → 发送，局域网内所有打开 APP 的设备自动收到
-3. **电脑（推荐）**：双击 `pc/启动文字互传.bat`（需已安装 Python），会自动发现手机并打开 `http://127.0.0.1:24680`，网页里可发送、可复制；也可以不装任何东西，直接用浏览器打开通知栏显示的 `http://<手机IP>:24680`
+3. **电脑（推荐）**：双击 `pc/启动文字互传.bat`（需已安装 Python），会自动发现手机并打开 `http://127.0.0.1:24680`；手机不在线时发送会自动暂存，上线后送达。若 UDP 被防火墙/AP 隔离拦截，可手动指定手机 IP：`python textrelay_pc.py --phone 192.168.3.40`；也可以不装任何东西，直接用浏览器打开通知栏显示的 `http://<手机IP>:24680`
 4. 顶部「设备」图标可查看在线设备、重命名本机、手动添加对方 IP（路由器开了 AP 隔离导致广播被禁时使用）
 5. 任意应用里「分享 → 文字互传」可把分享的文字直接填入发送框
 
@@ -82,6 +83,7 @@ app/src/main/java/com/textrelay/app/
 └─ textrelay.keystore      固定签名（不入库，本机保留）
 
 pc/
-├─ textrelay_pc.py         PC 端：UDP 自动发现手机 + 127.0.0.1 反向代理（纯标准库）
-└─ 启动文字互传.bat         双击启动
+├─ textrelay_pc.py         PC 端：UDP 自动发现 + 127.0.0.1 反向代理 + 离线暂存（纯标准库）
+├─ outbox_store.py         离线发件箱持久化（dbm 键值库，~/.textrelay/outbox）
+└─ 启动文字互传.bat         双击启动（支持透传参数，如 --phone IP）
 ```

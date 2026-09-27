@@ -1,21 +1,31 @@
-name: Release
+name: Build (latest)
 
-# 推送 v* 标签时发布正式版本；也可在 Actions 页面手动触发。
+# 仅在 APP 相关代码变更时编译并刷新 latest 预发布；
+# 改 pc/、README、文档等不会触发编译。
 
 on:
   push:
-    tags: [ 'v*' ]
+    branches: [ main ]
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "gradlew"
+      - "gradlew.bat"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/build-latest.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-latest
+  cancel-in-progress: true
 
 jobs:
-  build-release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +61,15 @@ jobs:
           echo "APK=dist/TextRelay-${VERSION}.apk" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Create versioned release
+      - name: Update "latest" pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$APK" \
-            --title "TextRelay $GITHUB_REF_NAME" \
-            --notes "自动构建的正式发布（versionName ${VERSION}）。签名与历史版本一致，可直接覆盖升级；versionCode 未变时需先卸载。"
+          SHA7="${GITHUB_SHA:0:7}"
+          gh release delete latest --yes --cleanup-tag 2>/dev/null \
+            || git push origin ":refs/tags/latest" 2>/dev/null || true
+          gh release create latest "$APK" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "最新构建 · ${SHA7}" \
+            --notes "main 分支自动构建（versionName ${VERSION}）。签名与正式发布一致，可直接覆盖安装旧版本。"

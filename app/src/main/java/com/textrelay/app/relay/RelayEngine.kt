@@ -1,6 +1,5 @@
 package com.textrelay.app.relay
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.net.wifi.WifiManager
 import com.textrelay.app.data.Message
@@ -10,10 +9,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -92,8 +92,29 @@ object RelayEngine {
 
     /** 发送：先落本地库（离线设备以后对账补齐），再推给当前在线设备 */
     fun send(text: String) {
+        scope?.launch { runCatching { sendSync(text) } }
+    }
+
+    /** 同步发送：落库并推送，返回送达台数（网页接口用，超时可控） */
+    suspend fun sendSync(text: String): Int {
         val m = MessageStore.create(text, Prefs.deviceId, Prefs.name)
-        pushNow(m)
+        return pushSync(m)
+    }
+
+    private suspend fun pushSync(m: Message): Int {
+        val targets = PeerRegistry.peers.value.values
+            .filter { it.isOnline() || it.manual }
+            .filter { it.ip != localIpHint() }
+        if (targets.isEmpty()) return 0
+        val body = m.toJson().toString()
+        return coroutineScope {
+            targets.map { peer ->
+                async {
+                    runCatching { Http.post("http://${peer.ip}:${peer.port}/push", body) }
+                        .getOrDefault(false)
+                }
+            }.awaitAll().count { it }
+        }
     }
 
     fun manualPoke(ip: String) {
@@ -171,22 +192,6 @@ object RelayEngine {
         msgs.forEach { arr.put(it.toJson()) }
         val ok = Http.post("http://${peer.ip}:${peer.port}/push", arr.toString())
         if (ok) PeerRegistry.setPushedUntil(peer.ip, msgs.last().ts)
-    }
-
-    @SuppressLint("CheckResult")
-    private fun pushNow(m: Message) {
-        scope?.launch {
-            val targets = PeerRegistry.peers.value.values
-                .filter { it.isOnline() || it.manual }
-                .filter { it.ip != localIpHint() }
-            targets.map { peer ->
-                async {
-                    runCatching {
-                        Http.post("http://${peer.ip}:${peer.port}/push", m.toJson().toString())
-                    }.getOrDefault(false)
-                }
-            }.joinAll()
-        }
     }
 
     private fun localIpHint(): String? = appContext?.let { NetworkUtils.localIps().firstOrNull() }

@@ -7,6 +7,8 @@
   1. 通过 UDP 信标自动发现局域网内打开了「文字互传」APP 的手机
   2. 在本机启动 http://127.0.0.1:24680 ，把网页请求转发给手机
   3. 自动用浏览器打开，电脑上永远只需要记住 127.0.0.1:24680
+  4. 手机不在线时也能发送：消息暂存在电脑（~/.textrelay/outbox，
+     经 outbox_store 持久化），手机一上线自动送达
 
 安全边界：
   - 只监听 127.0.0.1，局域网其他机器无法访问本代理
@@ -18,15 +20,20 @@
   python textrelay_pc.py --no-browser
 """
 
+import argparse
 import ipaddress
 import json
+import os
 import socket
 import sys
 import threading
 import time
 import urllib.request
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import outbox_store
 
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 24680   # 本机网页端口
@@ -35,6 +42,7 @@ APP_TAG = "textrelay"
 ONLINE_TIMEOUT = 15   # 超过 15 秒没有信标视为离线
 MAX_BODY = 1 * 1024 * 1024      # 请求体上限 1MB
 MAX_RESPONSE = 5 * 1024 * 1024  # 响应体上限 5MB
+OUTBOX_FILE = os.path.join(os.path.expanduser("~"), ".textrelay", "outbox")
 
 # 只转发文字互传 APP 的接口
 ALLOWED_PATHS = {"/", "/index.html", "/api/info", "/api/messages", "/api/send", "/push"}
@@ -42,6 +50,8 @@ ALLOWED_PATHS = {"/", "/index.html", "/api/info", "/api/messages", "/api/send", 
 devices = {}          # ip -> {"name":..., "port":..., "last":...}
 lock = threading.Lock()
 current = None        # 当前转发目标 (ip, port)
+PC_NAME = socket.gethostname() or "电脑"
+manual_devices = []   # --phone 手动指定的 (ip, port)，UDP 不可用时的兜底
 
 
 def is_lan_ipv4(ip: str) -> bool:
@@ -66,6 +76,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _opener = urllib.request.build_opener(NoRedirect)
+
+
+def pick_target():
+    """最近活跃的在线手机；没有则回退到 --phone 手动指定的设备"""
+    now = time.time()
+    with lock:
+        online = [k for k, v in devices.items() if now - v["last"] < ONLINE_TIMEOUT]
+        if online:
+            best = max(online, key=lambda k: devices[k]["last"])
+            return (best, devices[best]["port"])
+    return manual_devices[0] if manual_devices else None
 
 
 def discover_loop():
@@ -100,18 +121,54 @@ def discover_loop():
                     "port": port,
                     "last": time.time(),
                 }
-                now = time.time()
-                online = [k for k, v in devices.items() if now - v["last"] < ONLINE_TIMEOUT]
-                if online:
-                    best = max(online, key=lambda k: devices[k]["last"])
-                    target = (best, devices[best]["port"])
-                    if target != current:
-                        current = target
-                        d = devices[best]
-                        print(f"[✓] 已连接手机：{d['name']} ({best}:{d['port']})")
+                new = pick_target()
+                changed = new != current and new is not None
+                current = new
+            if changed:
+                d = devices[new[0]]
+                print(f"[✓] 已连接手机：{d['name']} ({new[0]}:{new[1]})")
+                threading.Thread(target=flush_outbox, daemon=True).start()
         except OSError:
             continue
 
+
+def queue_message(text):
+    """手机不在线：消息暂存本地，等手机上线后 flush_outbox 送达"""
+    count = outbox_store.append(text, PC_NAME, OUTBOX_FILE)
+    print(f"[↓] 手机不在线，已暂存第 {count} 条消息（上线后自动送达）")
+
+
+def flush_outbox():
+    msgs = outbox_store.load(OUTBOX_FILE)
+    if not msgs:
+        return
+    target = pick_target()
+    if not target:
+        return
+    ip, port = target
+    body = json.dumps(msgs, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(f"http://{ip}:{port}/push", data=body, method="POST")
+    req.add_header("Content-Type", "application/json; charset=utf-8")
+    try:
+        with _opener.open(req, timeout=6) as resp:
+            resp.read()
+    except Exception as e:
+        print(f"[!] 暂存消息送达失败（稍后自动重试）：{e}")
+        return
+    outbox_store.save([], OUTBOX_FILE)
+    print(f"[✓] 已把暂存的 {len(msgs)} 条消息送达手机")
+
+
+def flush_loop():
+    while True:
+        time.sleep(30)
+        try:
+            flush_outbox()
+        except Exception:
+            pass
+
+
+# ---------- HTTP 代理 ----------
 
 class ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -130,6 +187,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if path not in ALLOWED_PATHS:
             self._error_page(404, "接口不存在")
             return
+
+        # 发送接口：手机不在线或转发失败时，落到本地发件箱
+        if path == "/api/send" and method == "POST":
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length > MAX_BODY:
+                self._error_page(413, "请求体过大")
+                return
+            raw = self.rfile.read(length) if length else b""
+            try:
+                text = str(json.loads(raw.decode("utf-8")).get("text", "")).strip()
+            except Exception:
+                text = ""
+            if not text:
+                self._error_page(400, "内容为空")
+                return
+            if self._forward_send(text):
+                return
+            queue_message(text)
+            self._json_response({"ok": True, "queued": True})
+            return
+
         with lock:
             target = current
         if not target:
@@ -138,7 +216,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "尚未发现手机\n\n请检查：\n"
                 "1. 手机与电脑连的是同一个 Wi-Fi\n"
                 "2. 手机上已打开「文字互传」APP\n"
-                "3. 若弹出 Windows 防火墙提示，请勾选「专用网络」并允许",
+                "3. 若弹出 Windows 防火墙提示，请勾选「专用网络」并允许\n"
+                "4. 仍不行可退出本工具，改用命令行参数手动指定手机 IP：\n"
+                "   python textrelay_pc.py --phone 192.168.3.40\n\n"
+                "提示：发送文字不需要手机在线，会自动暂存，手机上线后送达。",
             )
             return
         ip, port = target
@@ -173,6 +254,39 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "也可刷新本页重试。",
             )
 
+    def _forward_send(self, text) -> bool:
+        """有手机在线时转发发送；返回是否成功"""
+        target = pick_target()
+        if not target:
+            return False
+        ip, port = target
+        body = json.dumps({"text": text}, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(f"http://{ip}:{port}/api/send", data=body, method="POST")
+        req.add_header("Content-Type", "application/json; charset=utf-8")
+        try:
+            with _opener.open(req, timeout=6) as resp:
+                data = resp.read(MAX_RESPONSE + 1)
+        except Exception as e:
+            print(f"[!] 发送转发失败，转为暂存：{e}")
+            return False
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            pass
+        return True
+
+    def _json_response(self, obj):
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _error_page(self, code, text):
         data = (
             "<!doctype html><meta charset='utf-8'>"
@@ -187,14 +301,41 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="文字互传 · PC 端")
+    parser.add_argument("--phone", action="append", default=[], metavar="IP[:端口]",
+                        help="手动指定手机地址（UDP 被防火墙/AP隔离拦截时使用），可多次")
+    parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    args = parser.parse_args()
+    for phone in args.phone:
+        ip, _, port = phone.partition(":")
+        try:
+            entry = (ip.strip(), int(port) if port else 24680)
+        except ValueError:
+            print(f"[!] 忽略无效的 --phone 参数：{phone}")
+            continue
+        if not is_lan_ipv4(entry[0]):
+            print(f"[!] 忽略非私网地址：{phone}")
+            continue
+        manual_devices.append(entry)
+        print(f"[i] 手动指定手机：{entry[0]}:{entry[1]}")
+
     threading.Thread(target=discover_loop, daemon=True).start()
-    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
+    threading.Thread(target=flush_loop, daemon=True).start()
+    try:
+        server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
+    except OSError as e:
+        print(f"[!] 端口 {LISTEN_PORT} 启动失败：{e}")
+        print("    可能已经有一个文字互传在运行，直接用浏览器打开 http://127.0.0.1:24680 即可")
+        sys.exit(1)
+    pending = len(outbox_store.load(OUTBOX_FILE))
     print("=" * 52)
     print("文字互传 · PC 端已启动")
     print(f"浏览器地址：http://{LISTEN_HOST}:{LISTEN_PORT}")
-    print("（手机上需已打开「文字互传」APP；Ctrl+C 退出）")
+    if pending:
+        print(f"有 {pending} 条暂存消息，等手机上线自动送达")
+    print("（手机不在线也能发送，会先暂存在电脑；Ctrl+C 退出）")
     print("=" * 52)
-    if "--no-browser" not in sys.argv:
+    if not args.no_browser:
         threading.Timer(
             1.0, lambda: webbrowser.open(f"http://{LISTEN_HOST}:{LISTEN_PORT}")
         ).start()

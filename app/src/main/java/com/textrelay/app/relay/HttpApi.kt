@@ -5,6 +5,7 @@ import com.textrelay.app.data.Message
 import com.textrelay.app.data.MessageStore
 import com.textrelay.app.data.Prefs
 import fi.iki.elonen.NanoHTTPD
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -58,8 +59,9 @@ object HttpApi {
                     JSONObject(readBody(session)).getString("text")
                 }.getOrNull()?.trim().takeUnless { it.isNullOrEmpty() }
                     ?: return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "empty text")
-                RelayEngine.send(text)
-                plain(NanoHTTPD.Response.Status.OK, "ok")
+                // 阻塞 NanoHTTPD 工作线程是安全的：推送并行发出，单请求 4s 超时
+                val delivered = runBlocking { RelayEngine.sendSync(text) }
+                json(JSONObject().put("ok", true).put("delivered", delivered))
             }
 
             uri == "/push" && method == NanoHTTPD.Method.POST -> {

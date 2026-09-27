@@ -25,6 +25,7 @@ header h1{font-size:20px;margin:0;font-weight:600}
 header .sub{font-size:12px;color:var(--muted)}
 main{max-width:720px;margin:0 auto;padding:12px 16px 48px}
 .sendbox{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:12px;margin-bottom:16px}
+#status{display:none;margin-top:8px;font-size:13px;color:var(--muted)}
 textarea{width:100%;min-height:72px;resize:vertical;border:none;outline:none;
   background:transparent;color:var(--text);font:inherit}
 .row{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
@@ -56,6 +57,7 @@ button:disabled{opacity:.4;cursor:default}
       <button id="clear">清空</button>
       <button id="send" class="primary" disabled>发送</button>
     </div>
+    <div id="status"></div>
   </div>
   <div id="list"></div>
   <div id="empty">还没有消息<br>手机上发送后，这里会自动出现</div>
@@ -70,10 +72,25 @@ fetch('/api/info').then(r=>r.json()).then(i=>{devEl.textContent='来自：'+i.na
 
 input.addEventListener('input',()=>{sendBtn.disabled=!input.value.trim();});
 
+let statusTimer=null;
+function showStatus(t){
+  const el=document.getElementById('status');
+  el.textContent=t; el.style.display='block';
+  clearTimeout(statusTimer);
+  statusTimer=setTimeout(()=>{el.style.display='none';},5000);
+}
 sendBtn.addEventListener('click',async()=>{
   const t=input.value.trim(); if(!t)return;
   input.value=''; sendBtn.disabled=true;
-  try{ await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})}); await poll(); }catch(e){}
+  try{
+    const r=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+    let j=null; try{ j=await r.json(); }catch(e){}
+    if(!r.ok){ showStatus('发送失败（'+r.status+'）'); }
+    else if(j&&j.queued){ showStatus('已暂存在电脑，手机上线后自动送达'); }
+    else if(j&&j.delivered>0){ showStatus('已发送 · 送达 '+j.delivered+' 台设备'); }
+    else { showStatus('已保存 · 其他设备上线后自动接收'); }
+    await poll();
+  }catch(e){ showStatus('发送失败：'+e); }
 });
 document.getElementById('paste').addEventListener('click',async()=>{
   try{ input.value=await navigator.clipboard.readText(); input.dispatchEvent(new Event('input')); }
