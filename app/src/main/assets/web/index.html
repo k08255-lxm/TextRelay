@@ -135,6 +135,16 @@ textarea{width:100%;min-height:64px;max-height:240px;resize:none;border:none;out
   *{transition-duration:1ms !important;animation:none !important}
   .msg.enter{opacity:1;transform:none}
 }
+.device-panel{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px 18px;margin-bottom:18px}
+.device-panel summary{cursor:pointer;font-weight:600}
+.device-panel h3{font-size:14px;margin:18px 0 8px}
+.device-panel form,.device-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.device-panel input{min-width:0;flex:1;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
+.device-panel dl{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;font-size:13px}
+.device-panel dt,.keyboard-hint{color:var(--muted)}
+.device-panel dd{margin:0;overflow-wrap:anywhere}
+.device-line span{flex:1;overflow-wrap:anywhere}
+.keyboard-hint{font-size:12px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -149,8 +159,20 @@ textarea{width:100%;min-height:64px;max-height:240px;resize:none;border:none;out
   </div>
 </header>
 <main>
+  <details class="device-panel" open>
+    <summary>设备与连接 · <span id="self-name">本机</span></summary>
+    <dl><dt>本机 IP</dt><dd id="self-ips">读取中…</dd><dt>同步端口</dt><dd id="self-port">—</dd><dt>网页地址</dt><dd id="self-web"></dd></dl>
+    <div id="pc-settings" hidden>
+      <form id="name-form"><label for="device-name">设备名称</label><input id="device-name" maxlength="64" required><button type="submit" class="btn-tonal">保存名称</button></form>
+      <h3>附近设备</h3><div id="peer-list"></div>
+      <h3>手动连接</h3>
+      <form id="peer-form"><input id="peer-ip" aria-label="对方 IP" placeholder="对方 IP，如 192.168.1.100" required><input id="peer-port" aria-label="同步端口" type="number" min="1" max="65535" value="24680" style="max-width:100px"><button type="submit" class="btn-tonal">添加设备</button></form>
+      <div id="manual-list"></div>
+    </div>
+  </details>
   <div class="composer">
     <textarea id="input" placeholder="输入要发送的文字，局域网内打开应用的设备都会收到"></textarea>
+    <div class="keyboard-hint">Enter 发送 · Ctrl+Enter 换行</div>
     <div class="row">
       <button id="paste" class="btn-tonal">粘贴</button>
       <button id="clear" class="btn-text">清空</button>
@@ -173,7 +195,7 @@ textarea{width:100%;min-height:64px;max-height:240px;resize:none;border:none;out
 <div id="scrim" hidden>
   <div class="dialog" role="dialog" aria-modal="true">
     <h3>清空全部记录？</h3>
-    <p>仅清除保存这些消息的设备上的记录，其他设备不受影响。此操作不可撤销。</p>
+    <p>清空将同步到所有设备，离线设备重新连接后生效。此操作不可撤销。</p>
     <div class="dialog-actions">
       <button class="btn-text" id="cancelclear">取消</button>
       <button id="okclear" class="btn-text">清空</button>
@@ -191,7 +213,10 @@ let msgs=[],seen=new Set(),lastTs=0,dirty=false,myId=null,lastRev=null;
 input.addEventListener('input',()=>{grow();sendBtn.disabled=!input.value.trim();});
 function grow(){input.style.height='auto';input.style.height=Math.min(input.scrollHeight,240)+'px';}
 input.addEventListener('keydown',e=>{
-  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!sendBtn.disabled){e.preventDefault();sendBtn.click();}
+  if(e.key!=='Enter'||e.isComposing||e.keyCode===229)return;
+  e.preventDefault();
+  if(e.ctrlKey||e.metaKey){input.setRangeText('\n',input.selectionStart,input.selectionEnd,'end');input.dispatchEvent(new Event('input'));}
+  else if(!sendBtn.disabled){sendBtn.click();}
 });
 
 /* ── Toast 反馈：每个动作都有回应 ── */
@@ -273,7 +298,8 @@ list.addEventListener('click',async e=>{
   const del=e.target.closest('button[data-del]');
   if(del){
     const id=del.dataset.del;
-    try{ await fetch('/api/messages/'+id,{method:'DELETE'}); }catch(err){}
+    if(!confirm('从所有设备删除这条文字？离线设备重新连接后也会删除。'))return;
+    try{ const r=await fetch('/api/messages/'+encodeURIComponent(id),{method:'DELETE'});if(!r.ok)throw Error(); }catch(err){toast('删除失败，请重试');return;}
     msgs=msgs.filter(x=>x.id!==id); seen.delete(id); dirty=true; render(); toast('已删除'); return;
   }
   const b=e.target.closest('button[data-id]'); if(!b)return;
@@ -284,13 +310,33 @@ list.addEventListener('click',async e=>{
 clearAllBtn.addEventListener('click',()=>{
   if(!msgs.length) return;
   openConfirm(async()=>{
-    try{ await fetch('/api/messages',{method:'DELETE'}); }catch(err){}
+    try{ const r=await fetch('/api/messages',{method:'DELETE'});if(!r.ok)throw Error(); }catch(err){toast('清空失败，请重试');return;}
     msgs=[]; seen.clear(); lastTs=0; lastRev=null;
     dirty=true; render(); await poll();
-    toast('已清空本机记录');
+    toast('已清空，正在同步到所有设备');
   });
 });
 
+async function configure(path,body,method='POST'){
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await r.json();if(!r.ok)throw Error(data.error||'保存失败');return data;
+}
+function showSelf(info){
+  document.getElementById('self-name').textContent=info.name||'本机';
+  document.getElementById('self-ips').textContent=(info.ips||[]).join(' / ')||'未连接局域网';
+  document.getElementById('self-port').textContent=info.port||'—';
+  document.getElementById('self-web').textContent=location.origin;
+}
+async function refreshSelf(){const r=await fetch('/api/info');if(r.ok)showSelf(await r.json());}
+document.getElementById('device-name').addEventListener('input',e=>{e.target.dataset.dirty='1';});
+document.getElementById('name-form').addEventListener('submit',async e=>{
+  e.preventDefault();const field=document.getElementById('device-name');
+  try{await configure('/api/name',{name:field.value});delete field.dataset.dirty;await refreshStatus();toast('名称已保存，其他设备稍后更新');}catch(err){toast(err.message);}
+});
+document.getElementById('peer-form').addEventListener('submit',async e=>{
+  e.preventDefault();const field=document.getElementById('peer-ip');
+  try{await configure('/api/peers',{ip:field.value,port:Number(document.getElementById('peer-port').value)});field.value='';await refreshStatus();toast('已添加，正在连接');}catch(err){toast(err.message);}
+});
 /* ── 连接状态 ── */
 async function refreshStatus(){
   try{
@@ -298,51 +344,58 @@ async function refreshStatus(){
     if(!r.ok) throw 0;
     const s=await r.json();
     myId=s.id||null;
+    document.getElementById('pc-settings').hidden=false;
+    document.getElementById('self-name').textContent=s.name||'本机';
+    const nameInput=document.getElementById('device-name');
+    if(!nameInput.dataset.dirty)nameInput.value=s.name||'';
+    const peers=document.getElementById('peer-list');peers.replaceChildren();
+    for(const p of s.devices||[]){const row=document.createElement('div');row.className='device-line';row.textContent=p.name+' · '+p.ip+':'+p.port+' · '+(p.online?'在线':'离线');peers.append(row);}
+    if(!peers.childNodes.length)peers.textContent='还没有发现其他设备，请连接同一 Wi-Fi。';
+    const manual=document.getElementById('manual-list');manual.replaceChildren();
+    for(const [ip,port] of s.manualPeers||[]){
+      const row=document.createElement('div');row.className='device-line';
+      const label=document.createElement('span');label.textContent=ip+':'+port;
+      const remove=document.createElement('button');remove.textContent='移除手动配置';
+      remove.onclick=async()=>{try{await configure('/api/peers',{ip,port},'DELETE');await refreshStatus();}catch(e){toast(e.message);}};
+      row.append(label,remove);manual.append(row);
+    }
+    await refreshSelf();
     if(s.connected){ devDot.className='dot ok'; devText.textContent=(s.onlineCount||1)+' 台设备在线 · '+s.device; }
     else{ devDot.className='dot warn'; devText.textContent='等待设备上线 · 文字保存在本机'; }
     return;
   }catch(e){ myId=null; }
   try{
     const i=await (await fetch('/api/info')).json();
-    devDot.className='dot ok'; devText.textContent='来自手机：'+i.name;
+    devDot.className='dot ok'; devText.textContent='来自手机：'+i.name;showSelf(i);
   }catch(e){
     devDot.className='dot warn'; devText.textContent='未连接手机';
   }
 }
 
-/* ── 轮询：修订号变化即全量重拉（手机删除/清空同步到网页）── */
-async function fullSync(){
-  try{
-    const arr=await (await fetch('/api/messages?since=0')).json();
-    msgs=Array.isArray(arr)?arr:[];
-    seen=new Set(msgs.map(m=>m.id));
-    lastTs=msgs.length?msgs[msgs.length-1].ts:0;
-    dirty=true; render();
-  }catch(e){}
-}
+/* 修订号只在成功读完整列表后提交；同一时刻只允许一次刷新。 */
+let polling=false;
 async function poll(){
+  if(polling)return;
+  polling=true;
   try{
-    const cj=await (await fetch('/api/messages/count')).json();
-    if(typeof cj.rev==='number'){
-      if(lastRev===null){ lastRev=cj.rev; }
-      else if(cj.rev!==lastRev){ lastRev=cj.rev; await fullSync(); return; }
+    const count=await fetch('/api/messages/count',{cache:'no-store'});
+    if(!count.ok)throw Error();
+    const cj=await count.json();
+    if(lastRev===null||cj.rev!==lastRev){
+      const r=await fetch('/api/messages?since=0',{cache:'no-store'});
+      if(!r.ok)throw Error();
+      const arr=await r.json();
+      if(!Array.isArray(arr))throw Error();
+      for(const m of arr)if(!seen.has(m.id))newIds.add(m.id);
+      msgs=arr.sort((a,b)=>a.ts-b.ts);seen=new Set(msgs.map(m=>m.id));
+      lastTs=msgs.length?msgs[msgs.length-1].ts:0;
+      lastRev=cj.rev;dirty=true;render();
     }
-  }catch(e){}
-  try{
-    const r=await fetch('/api/messages?since='+lastTs);
-    const arr=await r.json();
-    let added=false;
-    for(const m of arr){
-      if(!seen.has(m.id)){ seen.add(m.id); msgs.push(m); newIds.add(m.id); added=true; if(m.ts>lastTs)lastTs=m.ts; }
-      else{ const i=msgs.findIndex(x=>x.id===m.id); if(i>=0&&msgs[i].pending){ msgs[i]=m; added=true; } }
-    }
-    if(added){ msgs.sort((a,b)=>a.ts-b.ts); dirty=true; }
-  }catch(e){}
-  render();
+  }catch(e){}finally{polling=false;}
 }
 
 setInterval(refreshStatus,3000);
-setInterval(poll,2000);
+setInterval(poll,1000);
 refreshStatus();
 poll();
 </script>

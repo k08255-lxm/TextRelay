@@ -247,7 +247,14 @@ def sync_once():
             # Pull and push independently: a failed read must not suppress sending.
             refresh_device(endpoint)
             try:
-                store.merge(request(endpoint, "/api/messages?since=0"))
+                if store.merge_deletions(request(endpoint, "/api/deletions")):
+                    sync_wakeup.set()
+                request(endpoint, "/api/deletions", store.deletion_state())
+            except (OSError, ValueError, TypeError):
+                pass
+            try:
+                if store.merge(request(endpoint, "/api/messages?since=0")):
+                    sync_wakeup.set()
             except (OSError, ValueError, TypeError):
                 pass
             try:
@@ -262,14 +269,14 @@ def sync_once():
 
 def sync_loop():
     while True:
-        sync_wakeup.wait(20)
+        sync_wakeup.wait(5)
         sync_wakeup.clear()
         try:
             sync_once()
         except Exception as error:
             print(f"[!] 同步稍后重试：{error}")
         # Coalesce arrivals from multiple devices; don't launch a sync per beacon.
-        time.sleep(1)
+        time.sleep(0.1)
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -312,10 +319,12 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.respond({"error": "storage or connection unavailable"}, 503)
 
     def route(self, method):
+        global PC_NAME
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
         if self.lan_only and (method, path) not in {
-                ("GET", "/api/info"), ("GET", "/api/messages"), ("POST", "/push")}:
+                ("GET", "/api/info"), ("GET", "/api/messages"), ("POST", "/push"),
+                ("GET", "/api/deletions"), ("POST", "/api/deletions")}:
             self.respond({"error": "not found"}, 404)
         elif method == "GET" and path in ("/", "/index.html"):
             with open(PAGE_FILE, "rb") as source:
@@ -325,17 +334,42 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        elif method == "POST" and path == "/api/name":
+            body = self.read_json()
+            store.rename(body.get("name") if isinstance(body, dict) else None)
+            PC_NAME = store.device_name
+            self.respond({"ok": True, "name": PC_NAME})
         elif method == "GET" and path == "/api/info":
             self.respond({"app": APP_TAG, "id": PC_ID, "name": PC_NAME, "port": SYNC_PORT, "ips": lan_ips()})
+        elif path == "/api/peers" and method in ("POST", "DELETE"):
+            body = self.read_json()
+            ip = str(body.get("ip", "")).strip()
+            port = int(body.get("port", 24680))
+            if not is_lan_ipv4(ip) or not 1 <= port <= 65535 or ip in local_ips():
+                raise ValueError("请输入对方的局域网 IP 和有效端口")
+            with lock:
+                peers = [peer for peer in manual_devices if peer != (ip, port)]
+                if method == "POST":
+                    peers.append((ip, port))
+                store.set_manual_peers(peers)
+                manual_devices[:] = peers
+            sync_wakeup.set()
+            self.respond({"ok": True})
         elif method == "GET" and path == "/__relay/status":
             with lock:
                 peers = [{"id": d["id"], "name": d["name"], "ip": ip, "port": port,
                           "online": time.time() - d["last"] < ONLINE_TIMEOUT}
                          for (ip, port), d in sorted(devices.items())]
             online = [p for p in peers if p["online"]]
-            self.respond({"ok": True, "id": PC_ID, "connected": bool(online),
+            self.respond({"ok": True, "id": PC_ID, "name": PC_NAME, "connected": bool(online),
                           "device": "、".join(p["name"] for p in online), "devices": peers,
-                          "onlineCount": len(online)})
+                          "onlineCount": len(online), "manualPeers": list(manual_devices)})
+        elif method == "GET" and path == "/api/deletions":
+            self.respond(store.deletion_state())
+        elif method == "POST" and path == "/api/deletions":
+            if store.merge_deletions(self.read_json()):
+                sync_wakeup.set()
+            self.respond({"ok": True})
         elif method == "GET" and path == "/api/messages/count":
             with store.lock:
                 count = len(store.snapshot())
@@ -359,9 +393,11 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.respond({"ok": True, "delivered": delivered, "message": message})
         elif method == "DELETE" and path == "/api/messages":
             store.delete()
+            sync_wakeup.set()
             self.respond({"ok": True})
         elif method == "DELETE" and path.startswith("/api/messages/"):
             store.delete(urllib.parse.unquote(path.rsplit("/", 1)[-1]))
+            sync_wakeup.set()
             self.respond({"ok": True})
         else:
             self.respond({"error": "not found"}, 404)
@@ -375,7 +411,7 @@ ProxyHandler = RelayHandler  # Existing launchers still serve the local web UI.
 
 
 def main():
-    global store, PC_ID, SYNC_PORT
+    global store, PC_ID, SYNC_PORT, PC_NAME
     parser = argparse.ArgumentParser(description="文字互传 · 多设备 PC 节点")
     parser.add_argument("--phone", action="append", default=[], metavar="IP[:端口]", help="手动添加设备，可多次指定")
     parser.add_argument("--no-browser", action="store_true")
@@ -408,6 +444,8 @@ def main():
             raise OSError("无法启动局域网同步端口 24682–24690")
         store = MessageStore(os.path.join(DATA_DIR, "messages.json"))
         PC_ID = store.device_id
+        PC_NAME = store.device_name or PC_NAME
+        manual_devices[:] = list(dict.fromkeys([tuple(peer) for peer in store.manual_peers] + manual_devices))
         legacy = outbox_store.load(OUTBOX_FILE)
         if legacy:
             store.merge(legacy)

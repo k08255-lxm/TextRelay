@@ -48,6 +48,15 @@ object HttpApi {
                         .put("ips", JSONArray(NetworkUtils.localIps()))
                 )
 
+            uri == "/api/deletions" && method == NanoHTTPD.Method.GET -> json(MessageStore.deletionState())
+
+            uri == "/api/deletions" && method == NanoHTTPD.Method.POST -> {
+                val state = runCatching { JSONObject(readBody(session)) }.getOrNull()
+                    ?: return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "bad deletion state")
+                MessageStore.mergeDeletions(state)
+                json(JSONObject().put("ok", true))
+            }
+
             uri == "/api/messages/count" && method == NanoHTTPD.Method.GET ->
                 json(JSONObject().put("rev", MessageStore.revision()).put("count", MessageStore.count()))
 

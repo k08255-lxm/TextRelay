@@ -20,7 +20,7 @@ object Protocol {
     const val BEACON_INTERVAL_MS = 3000L
 
     /** 周期性全量对账间隔 */
-    const val SYNC_INTERVAL_MS = 20000L
+    const val SYNC_INTERVAL_MS = 5000L
 
     /** 超过该时长没有信标即视为离线 */
     const val PEER_TIMEOUT_MS = 12000L

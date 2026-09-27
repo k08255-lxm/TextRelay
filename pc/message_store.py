@@ -1,4 +1,4 @@
-"""Durable, bounded multi-writer message store; deletion stays local to this device."""
+"""Durable multi-writer store with shared deletion state and local device settings."""
 import json
 import os
 import threading
@@ -16,16 +16,25 @@ class MessageStore:
         self.messages = {}
         self.deleted = {}
         self.cleared_before = 0
+        self.shared_deleted = {}
+        self.shared_cleared_before = 0
+        self.device_name = ""
+        self.manual_peers = []
         self.device_id = "pc-" + uuid.uuid4().hex
         self.rev = time.time_ns() // 1_000_000  # A restart must invalidate the browser cache.
         if os.path.exists(path):
             with open(path, encoding="utf-8") as source:
                 data = json.load(source)
             self.device_id = data["device_id"]
+            self.device_name = data.get("device_name", "")
+            self.manual_peers = data.get("manual_peers", [])
+            self.shared_deleted = data.get("shared_deleted", {})
+            self.shared_cleared_before = data.get("shared_cleared_before", 0)
             self.cleared_before = data.get("cleared_before", 0)
             self.deleted = data.get("deleted", {})
             self.messages = {m["id"]: m for m in data.get("messages", [])
-                             if m["id"] not in self.deleted and m["ts"] > self.cleared_before}
+                             if m["id"] not in self.deleted and m["id"] not in self.shared_deleted
+                             and m["ts"] > max(self.cleared_before, self.shared_cleared_before)}
         self._prune()
         self._save()
 
@@ -42,7 +51,9 @@ class MessageStore:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         temp = self.path + ".tmp"
         with open(temp, "w", encoding="utf-8") as target:
-            json.dump({"device_id": self.device_id, "messages": list(self.messages.values()),
+            json.dump({"device_id": self.device_id, "device_name": self.device_name, "manual_peers": self.manual_peers,
+                       "shared_deleted": self.shared_deleted, "shared_cleared_before": self.shared_cleared_before,
+                       "messages": list(self.messages.values()),
                        "deleted": self.deleted, "cleared_before": self.cleared_before},
                       target, ensure_ascii=False)
             target.flush()
@@ -77,7 +88,7 @@ class MessageStore:
             added = 0
             cutoff = int(time.time() * 1000) - MAX_AGE_MS
             for m in items:
-                if (m["id"] not in self.messages and m["id"] not in self.deleted and
+                if (m["id"] not in self.messages and m["id"] not in self.deleted and m["id"] not in self.shared_deleted and
                         m["ts"] > self.cleared_before and m["ts"] >= cutoff):
                     self.messages[m["id"]] = {k: m[k] for k in ("id", "sid", "text", "ts")}
                     self.messages[m["id"]]["name"] = m.get("name", "?")
@@ -100,15 +111,76 @@ class MessageStore:
     def delete(self, message_id=None):
         with self.lock:
             old_messages, old_deleted, old_cleared = dict(self.messages), dict(self.deleted), self.cleared_before
+            old_shared, old_shared_clear = dict(self.shared_deleted), self.shared_cleared_before
+            now = int(time.time() * 1000)
             if message_id is None:
                 # Keep IDs too: a peer's clock may be ahead of this device's clock.
                 self.deleted.update({key: m["ts"] for key, m in self.messages.items()})
+                self.shared_deleted.update({key: max(now, m["ts"]) for key, m in self.messages.items()})
                 self.messages.clear()
-                self.cleared_before = int(time.time() * 1000)
+                self.shared_cleared_before = max(self.shared_cleared_before, now)
+                self.cleared_before = max(self.cleared_before, self.shared_cleared_before)
             elif message_id in self.messages:
                 self.deleted[message_id] = self.messages.pop(message_id)["ts"]
+                self.shared_deleted[message_id] = max(now, self.deleted[message_id])
             try:
                 self._commit()
             except Exception:
                 self.messages, self.deleted, self.cleared_before = old_messages, old_deleted, old_cleared
+                self.shared_deleted, self.shared_cleared_before = old_shared, old_shared_clear
                 raise
+
+    def rename(self, name):
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 64:
+            raise ValueError("设备名称须为 1–64 个字符")
+        with self.lock:
+            old = self.device_name
+            self.device_name = name.strip()
+            try:
+                self._commit()
+            except Exception:
+                self.device_name = old
+                raise
+
+    def set_manual_peers(self, peers):
+        with self.lock:
+            old = self.manual_peers
+            self.manual_peers = [list(peer) for peer in peers]
+            try:
+                self._commit()
+            except Exception:
+                self.manual_peers = old
+                raise
+
+    def deletion_state(self):
+        with self.lock:
+            return {"deleted": dict(self.shared_deleted), "cleared_before": self.shared_cleared_before}
+
+    def merge_deletions(self, state):
+        if not isinstance(state, dict) or not isinstance(state.get("deleted", {}), dict):
+            raise ValueError("invalid deletion state")
+        deleted, cutoff = state.get("deleted", {}), state.get("cleared_before", 0)
+        if not isinstance(cutoff, int) or cutoff < 0 or any(
+                not isinstance(key, str) or not isinstance(ts, int) or ts < 0 for key, ts in deleted.items()):
+            raise ValueError("invalid deletion state")
+        with self.lock:
+            before = (dict(self.messages), dict(self.deleted), self.cleared_before,
+                      dict(self.shared_deleted), self.shared_cleared_before)
+            changed = cutoff > self.shared_cleared_before
+            self.shared_cleared_before = max(self.shared_cleared_before, cutoff)
+            self.cleared_before = max(self.cleared_before, cutoff)
+            for key, ts in deleted.items():
+                if ts > self.shared_deleted.get(key, 0):
+                    self.shared_deleted[key] = ts
+                    self.deleted[key] = max(ts, self.deleted.get(key, 0))
+                    changed = True
+            if changed:
+                self.messages = {key: m for key, m in self.messages.items()
+                                 if key not in self.shared_deleted and m["ts"] > self.shared_cleared_before}
+                try:
+                    self._commit()
+                except Exception:
+                    (self.messages, self.deleted, self.cleared_before,
+                     self.shared_deleted, self.shared_cleared_before) = before
+                    raise
+            return changed

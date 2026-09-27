@@ -31,6 +31,9 @@ object MessageStore {
     // 单条删除记录墓碑 id，同理
     private var clearedBefore = 0L
     private val tombstones = LinkedHashSet<String>()
+    private val sharedDeleted = LinkedHashMap<String, Long>()
+    private var sharedClearedBefore = 0L
+    @Volatile var onChanged: (() -> Unit)? = null
     private var rev = 0L   // 存储修订号：任何增删都会 +1（网页轮询据此全量重拉）
 
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
@@ -101,13 +104,13 @@ object MessageStore {
         return fresh.size
     }
 
-    /** 删除单条消息（本机），并记录墓碑防止被其他设备同步回来 */
+    /** 删除单条消息并传播墓碑，防止离线设备重新带回内容。 */
     fun delete(id: String): Boolean {
         var removed = false
         synchronized(lock) {
             if (byId.remove(id) != null) {
                 tombstones.add(id)
-                if (tombstones.size > 500) tombstones.remove(tombstones.first())
+                sharedDeleted[id] = System.currentTimeMillis()
                 publishLocked()
                 removed = true
             }
@@ -121,13 +124,48 @@ object MessageStore {
 
     fun clear() {
         synchronized(lock) {
+            val now = System.currentTimeMillis()
+            byId.values.forEach { sharedDeleted[it.id] = maxOf(now, it.ts) }
             byId.clear()
-            tombstones.clear()
-            clearedBefore = System.currentTimeMillis()
+            sharedClearedBefore = maxOf(sharedClearedBefore, now)
+            clearedBefore = maxOf(clearedBefore, sharedClearedBefore)
             publishLocked()
         }
         synchronized(fileLock) { runCatching { file.delete() } }
         saveMeta()
+    }
+
+    fun deletionState(): JSONObject = synchronized(lock) {
+        JSONObject().put("deleted", JSONObject(sharedDeleted as Map<*, *>))
+            .put("cleared_before", sharedClearedBefore)
+    }
+
+    fun mergeDeletions(state: JSONObject): Boolean {
+        var changed = false
+        synchronized(lock) {
+            val cutoff = state.optLong("cleared_before", 0L)
+            if (cutoff > sharedClearedBefore) {
+                sharedClearedBefore = cutoff
+                clearedBefore = maxOf(clearedBefore, cutoff)
+                changed = true
+            }
+            state.optJSONObject("deleted")?.let { deleted ->
+                for (id in deleted.keys()) {
+                    val ts = deleted.optLong(id)
+                    if (ts > (sharedDeleted[id] ?: 0L)) {
+                        sharedDeleted[id] = ts
+                        tombstones.add(id)
+                        changed = true
+                    }
+                }
+            }
+            if (changed) {
+                byId.entries.removeAll { it.key in sharedDeleted || it.value.ts <= sharedClearedBefore }
+                publishLocked()
+            }
+        }
+        if (changed) { saveMeta(); rewrite() }
+        return changed
     }
 
     /** 写入去重 + 删除过滤：墓碑消息与清空时间点之前的消息不再接收 */
@@ -144,6 +182,10 @@ object MessageStore {
             if (!meta.exists()) return
             val o = JSONObject(meta.readText(Charsets.UTF_8))
             clearedBefore = o.optLong("clearedBefore", 0L)
+            sharedClearedBefore = o.optLong("sharedClearedBefore", 0L)
+            o.optJSONObject("sharedDeleted")?.let { deleted ->
+                for (id in deleted.keys()) { sharedDeleted[id] = deleted.optLong(id); tombstones.add(id) }
+            }
             o.optJSONArray("tombstones")?.let { arr ->
                 for (i in 0 until arr.length()) tombstones.add(arr.getString(i))
             }
@@ -152,12 +194,17 @@ object MessageStore {
 
     private fun saveMeta() {
         scope.launch(Dispatchers.IO) {
-            runCatching {
-                val o = JSONObject()
+            synchronized(fileLock) { runCatching {
+                val o = synchronized(lock) { JSONObject()
                     .put("clearedBefore", clearedBefore)
                     .put("tombstones", JSONArray(tombstones))
-                File(file.parentFile, "store_meta.json").writeText(o.toString(), Charsets.UTF_8)
-            }
+                    .put("sharedClearedBefore", sharedClearedBefore)
+                    .put("sharedDeleted", JSONObject(sharedDeleted as Map<*, *>)) }
+                val temp = File(file.parentFile, "store_meta.json.tmp")
+                temp.writeText(o.toString(), Charsets.UTF_8)
+                java.nio.file.Files.move(temp.toPath(), File(file.parentFile, "store_meta.json").toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            } }
         }
     }
 
@@ -186,6 +233,7 @@ object MessageStore {
     private fun publishLocked() {
         rev += 1
         _messages.value = byId.values.sortedWith(compareBy<Message> { it.ts }.thenBy { it.id })
+        onChanged?.invoke()
     }
 
     /** 存储修订号：网页端据此感知远端的增删并全量重拉 */

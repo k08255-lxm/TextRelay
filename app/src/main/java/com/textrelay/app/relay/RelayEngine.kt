@@ -15,6 +15,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -42,6 +44,7 @@ object RelayEngine {
     private val lastSyncAt = ConcurrentHashMap<String, Long>()
     private val syncLocks = ConcurrentHashMap<String, Mutex>()
     private val syncSlots = Semaphore(4)
+    private val syncRequests = Channel<Unit>(Channel.CONFLATED)
 
     fun httpPort(): Int = boundPort
 
@@ -73,6 +76,7 @@ object RelayEngine {
 
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = newScope
+        MessageStore.onChanged = { syncRequests.trySend(Unit); Unit }
         discovery = Discovery(newScope, Protocol.BEACON_PORT).also {
             it.start(::onBeacon, ::beaconPayload)
         }
@@ -85,6 +89,7 @@ object RelayEngine {
     fun stop() {
         if (!started) return
         started = false
+        MessageStore.onChanged = null
         discovery?.stop()
         discovery = null
         runCatching { httpServer?.stop() }
@@ -166,7 +171,8 @@ object RelayEngine {
     private suspend fun syncLoop() {
         val s = scope ?: return
         while (s.isActive) {
-            delay(Protocol.SYNC_INTERVAL_MS)
+            withTimeoutOrNull(Protocol.SYNC_INTERVAL_MS) { syncRequests.receive() }
+            delay(100) // Coalesce bursts while still forwarding newly received content promptly.
             coroutineScope {
                 PeerRegistry.peers.value.values.toList().map { peer ->
                     async { runCatching { syncPeer(peer, forced = true) } }
@@ -180,6 +186,12 @@ object RelayEngine {
         if (!mutex.tryLock()) return
         try {
             syncSlots.withPermit {
+                if (forced) {
+                    Http.get("http://${peer.ip}:${peer.port}/api/deletions")?.let { raw ->
+                        runCatching { MessageStore.mergeDeletions(JSONObject(raw)) }
+                    }
+                    Http.post("http://${peer.ip}:${peer.port}/api/deletions", MessageStore.deletionState().toString())
+                }
                 val myLatest = MessageStore.latestTs()
                 // A timestamp is not a multi-writer cursor. Periodically reconcile the
                 // entire retained set so late messages from a third device cannot be lost.

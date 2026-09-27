@@ -90,12 +90,12 @@ class MainViewModel : ViewModel() {
         RelayEngine.send(text)
     }
 
-    /** 删除单条消息（本机），并防止被其他设备同步回来 */
+    /** 删除单条消息，并同步到其他设备。 */
     fun deleteMessage(id: String) {
         MessageStore.delete(id)
     }
 
-    /** 清空本机全部消息，并防止被其他设备同步回来 */
+    /** 清空记录并传播删除状态，离线设备重连后生效。 */
     fun clearMessages() {
         MessageStore.clear()
     }

@@ -106,7 +106,7 @@ fun MainScreen(vm: MainViewModel) {
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(text = { Text("检查更新") }, leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
                             onClick = { showMenu = false; vm.checkUpdate(manual = true) })
-                        DropdownMenuItem(text = { Text("清空本机记录", color = cs.error) },
+                        DropdownMenuItem(text = { Text("清空所有设备记录", color = cs.error) },
                             leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = cs.error) },
                             enabled = messages.isNotEmpty(), onClick = { showMenu = false; showClearConfirm = true })
                     }
@@ -163,14 +163,14 @@ fun MainScreen(vm: MainViewModel) {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false; pendingDelete = null },
             icon = { Icon(Icons.Outlined.DeleteOutline, null, tint = cs.error) },
-            title = { Text(if (all) "清空本机记录？" else "删除这条文字？") },
-            text = { Text("仅删除本机内容，其他设备保留各自的记录。删除后不会再次同步到本机。") },
+            title = { Text(if (all) "清空所有设备记录？" else "删除这条文字？") },
+            text = { Text("删除将同步到所有设备，离线设备会在重新连接后生效。此操作不可撤销。") },
             confirmButton = {
                 TextButton(onClick = {
                     if (all) vm.clearMessages() else pendingDelete?.let { vm.deleteMessage(it.id) }
                     showClearConfirm = false
                     pendingDelete = null
-                    notice(if (all) "已清空本机记录" else "已删除")
+                    notice(if (all) "已清空所有设备记录" else "已删除")
                 }, colors = ButtonDefaults.textButtonColors(contentColor = cs.error)) { Text("确认删除") }
             },
             dismissButton = { TextButton(onClick = { showClearConfirm = false; pendingDelete = null }) { Text("保留") } }
@@ -320,7 +320,7 @@ private fun MessageCard(message: Message, mine: Boolean, onCopy: () -> Unit, onD
                 Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreHoriz, "文字操作", Modifier.size(20.dp), tint = cs.onSurfaceVariant) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("从本机删除", color = cs.error) },
+                        DropdownMenuItem(text = { Text("从所有设备删除", color = cs.error) },
                             leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = cs.error) },
                             onClick = { menu = false; onDelete() })
                     }
@@ -365,7 +365,7 @@ private fun PeersSheet(vm: MainViewModel, onDismiss: () -> Unit, onCopy: (String
     var ipInput by rememberSaveable { mutableStateOf("") }
     var ipError by rememberSaveable { mutableStateOf(false) }
     var nameSaved by rememberSaveable { mutableStateOf(false) }
-    val online = peers.values.filter { it.isOnline() }.sortedByDescending { it.lastSeen }
+    val online = peers.values.filter { it.isOnline() }.sortedWith(compareBy({ it.name.lowercase() }, { it.id }, { it.ip }))
     val manual = peers.values.filter { it.manual }.sortedBy { it.ip }
     val cs = MaterialTheme.colorScheme
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
