@@ -280,6 +280,16 @@ list.addEventListener('click',async e=>{
   const m=msgs.find(x=>x.id===b.dataset.id);
   if(m){ copyText(m.text); toast('已复制到剪贴板'); }
 });
+/* ── 清空全部记录：确认弹窗 → 删除 → 重置状态 ── */
+clearAllBtn.addEventListener('click',()=>{
+  if(!msgs.length) return;
+  openConfirm(async()=>{
+    try{ await fetch('/api/messages',{method:'DELETE'}); }catch(err){}
+    msgs=[]; seen.clear(); lastTs=0; lastRev=null;
+    dirty=true; render(); await poll();
+    toast('已清空本机记录');
+  });
+});
 
 /* ── 连接状态 ── */
 async function refreshStatus(){
