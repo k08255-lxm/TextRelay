@@ -10,6 +10,13 @@
 - **方便复制**：每条消息一键复制；支持从任意应用的「分享」菜单把文字直接发出去
 - **固定签名**：debug/release 共用 `app/textrelay.keystore`，升级直接覆盖安装，无需卸载重装
 
+## 下载 APK（自动发布）
+
+- **最新构建**：main 分支有代码更新时，GitHub Actions 自动编译并刷新 [latest 预发布](https://github.com/k08255-lxm/TextRelay/releases/tag/latest)，下载入口固定不变
+- **正式版本**：打 `v*` 标签自动发布对应 Release：`git tag v1.0.1 && git push origin v1.0.1`（发布前记得递增 `versionCode`）
+- CI 产出的 APK 与本机构建**使用同一把签名密钥**（密钥经仓库 Secrets `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 注入，不进代码库），可直接互相覆盖安装
+- 工作流见 [.github/workflows/release.yml](.github/workflows/release.yml)，也支持在 Actions 页面手动触发
+
 ## 构建与安装
 
 需要 JDK 17+ 与 Android SDK（或直接用 Android Studio）。

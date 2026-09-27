@@ -1,18 +1,17 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
-where python >nul 2>nul
+py -3 --version >nul 2>nul
 if %errorlevel%==0 (
-  python textrelay_pc.py
-  pause
-  exit /b
+    py -3 textrelay_pc.py %*
+    pause
+    exit /b
 )
-where py >nul 2>nul
+python --version >nul 2>nul
 if %errorlevel%==0 (
-  py textrelay_pc.py
-  pause
-  exit /b
+    python textrelay_pc.py %*
+    pause
+    exit /b
 )
-echo æœªæ‰¾åˆ° Pythonï¼Œè¯·å…ˆå®‰è£… Pythonï¼ˆå®‰è£…æ—¶å‹¾é€‰ Add to PATHï¼‰
-echo ä¸‹è½½åœ°å€ï¼šhttps://www.python.org/downloads/
+echo [´íÎó] Î´ÕÒµ½ Python£¬ÇëÏÈ°²×° Python 3£¨°²×°Ê±¹´Ñ¡ Add to PATH / py Æô¶¯Æ÷£©
+echo ÏÂÔØµØÖ·£ºhttps://www.python.org/downloads/
 pause

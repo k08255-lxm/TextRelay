@@ -1,0 +1,4 @@
+# 批处理保持原始字节（GBK + CRLF），禁止 git 做换行/编码转换
+*.bat -text
+*.jar binary
+*.keystore binary
