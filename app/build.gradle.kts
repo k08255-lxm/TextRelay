@@ -16,6 +16,21 @@ if (!hasFixedSigning) {
     println("警告: 未找到 keystore.properties 或签名环境变量（TEXTRELAY_STORE_PASSWORD / TEXTRELAY_KEY_PASSWORD），固定签名未启用")
 }
 
+// versionCode 自动取 git 提交数（随提交递增，无需手动维护）；无 git 环境回退为 1
+val autoVersionCode: Int = run {
+    try {
+        val proc = ProcessBuilder("git", "rev-list", "--count", "HEAD")
+            .directory(rootDir)
+            .start()
+        val n = proc.inputStream.reader().readText().trim().toIntOrNull()
+        runCatching { proc.destroy() }
+        n ?: 1
+    } catch (e: Exception) {
+        logger.warn("无法读取 git 提交数，versionCode 回退为 1：{}", e.message)
+        1
+    }
+}
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -30,8 +45,8 @@ android {
         applicationId = "com.textrelay.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = autoVersionCode
+        versionName = "1.0.4"
     }
 
     signingConfigs {

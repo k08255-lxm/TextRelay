@@ -17,7 +17,8 @@ data class UpdateEvent(
     val newVersion: String?,
     val pageUrl: String? = null,
     val notes: String? = null,
-    val failed: Boolean = false
+    val failed: Boolean = false,
+    val reason: String? = null
 )
 
 class MainViewModel : ViewModel() {
@@ -50,8 +51,8 @@ class MainViewModel : ViewModel() {
                     _updateEvent.value = UpdateEvent(r.version, r.pageUrl, r.notes)
                 UpdateResult.UpToDate ->
                     if (manual) _updateEvent.value = UpdateEvent(null)
-                UpdateResult.Failed ->
-                    if (manual) _updateEvent.value = UpdateEvent(null, failed = true)
+                is UpdateResult.Failed ->
+                    if (manual) _updateEvent.value = UpdateEvent(null, failed = true, reason = r.reason)
             }
         }
     }

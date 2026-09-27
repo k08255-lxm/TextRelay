@@ -1,9 +1,11 @@
 name: Release
 
-# 全自动发版：推送包含 APP 代码变更的提交到 main 后，
-# 若 build.gradle.kts 的 versionName 对应的标签不存在，则自动编译并发布正式 Release
-# （自动生成更新日志）。版本号没变时自动跳过编译，不浪费额度。
-# 改 APP 代码发新版时，记得同步递增 versionName 和 versionCode。
+# 发版规则（省额度）：
+# 1) 本地编译发版（推荐，零编译额度）：本地构建后创建「草稿 Release」并附上 APK，
+#    再推送代码 —— CI 发现草稿后直接发布，跳过编译：
+#      gh release create vX.Y.Z --draft --target HEAD --title "..." --notes "..." 本地apk路径
+# 2) 没有草稿时，CI 自动编译并发布正式 Release（versionName 必须是新版本号）。
+# 3) versionName 对应的标签已存在 → 跳过。
 
 on:
   push:
@@ -37,9 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 完整历史：判断标签存在 + 生成更新日志
+          fetch-depth: 0
 
-      - name: Decide whether to release
+      - name: Decide release mode
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -49,26 +51,29 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           FORCE="${{ github.event.inputs.force }}"
           if [ "$FORCE" = "true" ]; then
-            echo "SKIP=false" >> "$GITHUB_ENV"
             gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null \
               || git push origin ":refs/tags/$TAG" 2>/dev/null || true
+            echo "MODE=build" >> "$GITHUB_ENV"
           elif git tag -l "$TAG" | grep -q .; then
-            echo "SKIP=true" >> "$GITHUB_ENV"
-            echo "版本 $TAG 已发布过，跳过（改 APP 代码时请同步递增 versionName/versionCode）"
+            echo "MODE=skip" >> "$GITHUB_ENV"
+            echo "版本 $TAG 已发布过，跳过"
+          elif gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+            echo "MODE=publish" >> "$GITHUB_ENV"
+            echo "发现本地编译的草稿 Release $TAG，将直接发布（跳过编译）"
           else
-            echo "SKIP=false" >> "$GITHUB_ENV"
-            echo "版本 $TAG 未发布过，将自动构建发布"
+            echo "MODE=build" >> "$GITHUB_ENV"
+            echo "版本 $TAG 未发布且无草稿，将云端编译发布"
           fi
 
       - uses: actions/setup-java@v4
-        if: env.SKIP != 'true'
+        if: env.MODE == 'build'
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
       - name: Restore signing keystore from secrets
-        if: env.SKIP != 'true'
+        if: env.MODE == 'build'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -81,20 +86,20 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\n' "$STORE_PASSWORD" "$STORE_PASSWORD" > keystore.properties
 
       - name: Build release APK
-        if: env.SKIP != 'true'
+        if: env.MODE == 'build'
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
       - name: Prepare APK
-        if: env.SKIP != 'true'
+        if: env.MODE == 'build'
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/TextRelay-${VERSION}.apk"
           echo "APK=dist/TextRelay-${VERSION}.apk" >> "$GITHUB_ENV"
 
       - name: Build release notes
-        if: env.SKIP != 'true'
+        if: env.MODE == 'build'
         run: |
           PREV=$(git tag --sort=-creatordate | grep -v '^latest$' | sed -n '1p')
           {
@@ -113,8 +118,8 @@ jobs:
           } > release_notes.md
           cat release_notes.md
 
-      - name: Create release
-        if: env.SKIP != 'true'
+      - name: Create release (云端编译)
+        if: env.MODE == 'build'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -122,3 +127,11 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "TextRelay $TAG" \
             --notes-file release_notes.md
+
+      - name: Publish draft release (本地编译)
+        if: env.MODE == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$TAG" --draft=false --latest
+          echo "已直接发布本地编译的 $TAG（未占用 Actions 编译资源）"

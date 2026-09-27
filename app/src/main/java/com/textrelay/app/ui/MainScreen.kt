@@ -184,7 +184,7 @@ fun MainScreen(vm: MainViewModel) {
                         ev.newVersion != null ->
                             (ev.notes?.take(600)?.trim() ?: "") +
                                 "\n\n点击「打开下载页」前往浏览器下载新 APK。"
-                        ev.failed -> "网络不可用或无法访问 GitHub，请稍后再试。"
+                        ev.failed -> "检查失败：${ev.reason ?: "未知原因"}。\n若使用了代理/VPN，请确认已开启后重试。"
                         else -> "当前已是最新版本。"
                     }
                 )
