@@ -21,6 +21,7 @@
 """
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import os
@@ -31,6 +32,7 @@ import time
 import urllib.request
 import uuid
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import outbox_store
@@ -49,10 +51,12 @@ PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html
 ALLOWED_PATHS = {"/", "/index.html", "/__relay/status", "/api/info", "/api/messages", "/api/send", "/push"}
 
 devices = {}          # ip -> {"name":..., "port":..., "last":...}
-lock = threading.Lock()
+lock = threading.RLock()  # 可重入：pick_target 会在持有锁时被再次调用
 current = None        # 当前转发目标 (ip, port)
 PC_NAME = socket.gethostname() or "电脑"
 manual_devices = []   # --phone 手动指定的 (ip, port)，UDP 不可用时的兜底
+MULTICAST_GROUP = "239.255.246.80"
+PC_ID = "pc-" + hashlib.sha256(PC_NAME.encode("utf-8")).hexdigest()[:8]
 
 
 def is_lan_ipv4(ip: str) -> bool:
@@ -77,6 +81,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _opener = urllib.request.build_opener(NoRedirect)
+
+own_ips_cache = (set(), 0.0)
+
+
+def local_ips() -> list:
+    """本机所有 IPv4（缓存 30 秒，避免频繁 DNS 查询）"""
+    global own_ips_cache
+    now = time.time()
+    if now - own_ips_cache[1] > 30:
+        try:
+            own_ips_cache = (set(socket.gethostbyname_ex(socket.gethostname())[2]), now)
+        except Exception:
+            own_ips_cache = (set(), now)
+    return sorted(own_ips_cache[0])
+
+
+def own_ips() -> set:
+    """本机所有 IP，用于忽略自己发出的信标回环"""
+    return set(local_ips())
 
 
 def pick_target():
@@ -111,6 +134,9 @@ def discover_loop():
             if obj.get("app") != APP_TAG:
                 continue
             ip = addr[0]
+            # 忽略自己（ID 相同或来源是本机地址——广播可能经虚拟网卡回环）
+            if obj.get("id") == PC_ID or ip in own_ips():
+                continue
             if not is_lan_ipv4(ip):
                 continue
             port = int(obj.get("port", 24680) or 0)
@@ -131,6 +157,131 @@ def discover_loop():
                 threading.Thread(target=flush_outbox, daemon=True).start()
         except OSError:
             continue
+
+
+def lan_ips():
+    """真实私网 IPv4（排除 TUN 虚拟网卡 198.18.0.0/15 等）"""
+    return [s for s in local_ips()
+            if is_lan_ipv4(s) and not s.startswith("198.18.")]
+
+
+def fetch_name(ip, port):
+    try:
+        with _opener.open(f"http://{ip}:{port}/api/info", timeout=1.5) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+        if isinstance(info, dict) and info.get("name"):
+            return str(info["name"])[:64]
+    except Exception:
+        pass
+    return None
+
+
+class SyncHandler(BaseHTTPRequestHandler):
+    """给手机 APP 当设备用的最小同步端点：拉取返回空、推送直接确认"""
+
+    def do_GET(self):
+        data = b"[]"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if n:
+            self.rfile.read(n)
+        data = b"0"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def beacon_loop():
+    """向局域网广播自己（与手机 APP 相同的信标协议），让手机的设备列表能看到这台电脑"""
+    sync_port = None
+    for p in range(24682, 24691):
+        try:
+            srv = ThreadingHTTPServer(("0.0.0.0", p), SyncHandler)
+        except OSError:
+            continue
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        sync_port = p
+        break
+    if sync_port is None:
+        sync_port = 24680  # 兜底：退化为网页代理端口
+
+    payload = json.dumps({
+        "app": APP_TAG, "v": 1, "id": PC_ID, "name": PC_NAME,
+        "port": sync_port, "latest": 0,
+    }).encode("utf-8")
+    ips = lan_ips()
+    targets = ["255.255.255.255", MULTICAST_GROUP]
+    if ips:
+        targets.append(".".join(ips[0].split(".")[:3]) + ".255")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    print(f"[*] 已作为设备广播本机（{PC_NAME}，同步端口 {sync_port}）")
+    while True:
+        for t in targets:
+            try:
+                sock.sendto(payload, (t, BEACON_PORT))
+            except OSError:
+                pass
+        time.sleep(3)
+
+
+def scan_subnet(base: str):
+    """UDP 收不到时的兜底：并发探测网段内开启了 24680 端口的主机，返回候选列表"""
+    def probe(i):
+        ip = f"{base}.{i}"
+        try:
+            s = socket.create_connection((ip, 24680), timeout=0.5)
+            s.close()
+            return ip
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=64) as ex:
+        return [r for r in ex.map(probe, range(1, 255)) if r]
+
+
+def scan_loop():
+    """手机不在线且 UDP 收不到信标时，周期性扫描网段寻找手机"""
+    global current
+    while True:
+        time.sleep(10)
+        with lock:
+            connected = any(time.time() - v["last"] < ONLINE_TIMEOUT for v in devices.values())
+        if connected or manual_devices:
+            continue
+        ips = lan_ips()
+        if not ips:
+            continue
+        base = ".".join(ips[0].split(".")[:3])
+        hits = scan_subnet(base)[:50]   # TUN 等环境可能产生大量假命中，验证上限 50 个
+        if not hits:
+            continue
+
+        def validate(hit):
+            return (hit, fetch_name(hit, 24680))
+
+        # 并行验证：必须是 /api/info 应答正常的文字互传设备（排除路由器管理页等）
+        with ThreadPoolExecutor(max_workers=32) as ex:
+            for hit, name in ex.map(validate, hits):
+                if not name:
+                    continue
+                with lock:
+                    devices[hit] = {"name": name, "port": 24680, "last": time.time()}
+                    current = (hit, 24680)
+                print(f"[✓] 扫描发现手机：{name} ({hit}:24680)")
+                threading.Thread(target=flush_outbox, daemon=True).start()
+                break
 
 
 def queue_message(text):
@@ -226,8 +377,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "1. 手机与电脑连的是同一个 Wi-Fi\n"
                 "2. 手机上已打开「文字互传」APP\n"
                 "3. 若弹出 Windows 防火墙提示，请勾选「专用网络」并允许\n"
-                "4. 仍不行可退出本工具，改用命令行参数手动指定手机 IP：\n"
-                "   python textrelay_pc.py --phone 192.168.3.40\n\n"
+                "4. 不做操作也可以：本工具会自动扫描网段寻找手机（约十几秒），\n"
+                "   或退出后用命令行手动指定：python textrelay_pc.py --phone 192.168.3.40\n\n"
                 "提示：发送文字不需要手机在线，会自动暂存，手机上线后送达。",
             )
             return
@@ -354,6 +505,8 @@ def main():
 
     threading.Thread(target=discover_loop, daemon=True).start()
     threading.Thread(target=flush_loop, daemon=True).start()
+    threading.Thread(target=beacon_loop, daemon=True).start()
+    threading.Thread(target=scan_loop, daemon=True).start()
     try:
         server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
     except OSError as e:
