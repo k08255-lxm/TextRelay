@@ -436,7 +436,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             with lock:
                 info = devices.get(target[0])
             device = (info or {}).get("name") or f"{target[0]}:{target[1]}"
-        self._json_response({"ok": True, "connected": target is not None, "device": device})
+        self._json_response({"ok": True, "connected": target is not None, "device": device, "id": PC_ID})
 
     def _forward_send(self, text) -> bool:
         """有手机在线时转发发送；返回是否成功"""
@@ -444,7 +444,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not target:
             return False
         ip, port = target
-        body = json.dumps({"text": text}, ensure_ascii=False).encode("utf-8")
+        body = json.dumps({"text": text, "sid": PC_ID, "name": PC_NAME}, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(f"http://{ip}:{port}/api/send", data=body, method="POST")
         req.add_header("Content-Type", "application/json; charset=utf-8")
         try:

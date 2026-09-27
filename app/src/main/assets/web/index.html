@@ -66,7 +66,7 @@ button:disabled{opacity:.4;cursor:default}
 const list=document.getElementById('list'),empty=document.getElementById('empty'),
       input=document.getElementById('input'),sendBtn=document.getElementById('send'),
       devEl=document.getElementById('dev');
-let msgs=[],seen=new Set(),lastTs=0,dirty=false;
+let msgs=[],seen=new Set(),lastTs=0,dirty=false,myId=null;
 
 input.addEventListener('input',()=>{sendBtn.disabled=!input.value.trim();});
 
@@ -112,10 +112,11 @@ function fmt(ts){
 }
 function render(){
   if(!dirty)return; dirty=false;
-  list.innerHTML=msgs.map(m=>
-    `<div class="msg"><div class="head"><span class="who">${esc(m.name)}</span>`+
+  list.innerHTML=msgs.map(m=>{
+    const who=(myId&&m.sid===myId)?'我':esc(m.name);
+    return `<div class="msg"><div class="head"><span class="who">${who}</span>`+
     `<span>${fmt(m.ts)}</span></div><pre>${esc(m.text)}</pre>`+
-    `<div class="act"><button data-id="${m.id}">复制</button></div></div>`).join('');
+    `<div class="act"><button data-id="${m.id}">复制</button></div></div>`;}).join('');
   empty.style.display=msgs.length?'none':'block';
   window.scrollTo(0,document.body.scrollHeight);
 }
@@ -131,9 +132,12 @@ async function refreshStatus(){
     const r=await fetch('/__relay/status');
     if(!r.ok) throw 0;
     const s=await r.json();
+    myId = s.id || null;
     devEl.textContent = s.connected ? ('已连接手机：'+s.device) : '未连接手机 · 发送将暂存，上线后自动送达';
     return;
-  }catch(e){}
+  }catch(e){
+    myId = null;
+  }
   try{
     const i=await (await fetch('/api/info')).json();
     devEl.textContent='来自手机：'+i.name;

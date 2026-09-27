@@ -55,12 +55,15 @@ object HttpApi {
             }
 
             uri == "/api/send" && method == NanoHTTPD.Method.POST -> {
-                val text = runCatching {
-                    JSONObject(readBody(session)).getString("text")
-                }.getOrNull()?.trim().takeUnless { it.isNullOrEmpty() }
+                val body = runCatching { JSONObject(readBody(session)) }.getOrNull()
+                    ?: return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "bad body")
+                val text = body.optString("text").trim().takeUnless { it.isNullOrEmpty() }
                     ?: return plain(NanoHTTPD.Response.Status.BAD_REQUEST, "empty text")
+                // 允许调用方（如 PC 工具）声明发送者身份，缺省视为本机
+                val senderId = body.optString("sid").takeUnless { it.isBlank() }
+                val senderName = body.optString("name").takeUnless { it.isBlank() }
                 // 阻塞 NanoHTTPD 工作线程是安全的：推送并行发出，单请求 4s 超时
-                val delivered = runBlocking { RelayEngine.sendSync(text) }
+                val delivered = runBlocking { RelayEngine.sendSync(text, senderId, senderName) }
                 json(JSONObject().put("ok", true).put("delivered", delivered))
             }
 

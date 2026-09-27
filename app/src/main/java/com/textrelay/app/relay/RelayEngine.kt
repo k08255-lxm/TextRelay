@@ -96,8 +96,8 @@ object RelayEngine {
     }
 
     /** 同步发送：落库并推送，返回送达台数（网页接口用，超时可控） */
-    suspend fun sendSync(text: String): Int {
-        val m = MessageStore.create(text, Prefs.deviceId, Prefs.name)
+    suspend fun sendSync(text: String, senderId: String? = null, senderName: String? = null): Int {
+        val m = MessageStore.create(text, senderId ?: Prefs.deviceId, senderName ?: Prefs.name)
         return pushSync(m)
     }
 
