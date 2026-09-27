@@ -1,35 +1,74 @@
 name: Release
 
-# 触发规则（省额度）：只在推送 v* 标签时编译一次，发布一个正式 Release；
-# 平时提交代码不会触发任何构建。
+# 全自动发版：推送包含 APP 代码变更的提交到 main 后，
+# 若 build.gradle.kts 的 versionName 对应的标签不存在，则自动编译并发布正式 Release
+# （自动生成更新日志）。版本号没变时自动跳过编译，不浪费额度。
+# 改 APP 代码发新版时，记得同步递增 versionName 和 versionCode。
 
 on:
   push:
-    tags: [ 'v*' ]
+    branches: [ main ]
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "gradlew"
+      - "gradlew.bat"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
+    inputs:
+      force:
+        description: '版本号已存在时强制重新发布'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  build-release:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 需要完整历史来生成两个标签之间的更新日志
+          fetch-depth: 0   # 完整历史：判断标签存在 + 生成更新日志
+
+      - name: Decide whether to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' app/build.gradle.kts | head -1)
+          TAG="v$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          FORCE="${{ github.event.inputs.force }}"
+          if [ "$FORCE" = "true" ]; then
+            echo "SKIP=false" >> "$GITHUB_ENV"
+            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null \
+              || git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          elif git tag -l "$TAG" | grep -q .; then
+            echo "SKIP=true" >> "$GITHUB_ENV"
+            echo "版本 $TAG 已发布过，跳过（改 APP 代码时请同步递增 versionName/versionCode）"
+          else
+            echo "SKIP=false" >> "$GITHUB_ENV"
+            echo "版本 $TAG 未发布过，将自动构建发布"
+          fi
 
       - uses: actions/setup-java@v4
+        if: env.SKIP != 'true'
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
       - name: Restore signing keystore from secrets
+        if: env.SKIP != 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -42,42 +81,44 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\n' "$STORE_PASSWORD" "$STORE_PASSWORD" > keystore.properties
 
       - name: Build release APK
+        if: env.SKIP != 'true'
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
       - name: Prepare APK
+        if: env.SKIP != 'true'
         run: |
-          VERSION=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' app/build.gradle.kts | head -1)
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/TextRelay-${VERSION}.apk"
           echo "APK=dist/TextRelay-${VERSION}.apk" >> "$GITHUB_ENV"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Build release notes
+        if: env.SKIP != 'true'
         run: |
-          CUR="$GITHUB_REF_NAME"
-          PREV=$(git tag --sort=-creatordate | grep -v '^latest$' | sed -n '2p')
+          PREV=$(git tag --sort=-creatordate | grep -v '^latest$' | sed -n '1p')
           {
             echo "## 更新内容"
-            if [ -n "$PREV" ]; then
-              git log --no-decorate --pretty=format:"- %s (%h)" "$PREV..$CUR"
+            if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+              git log --no-decorate --pretty=format:"- %s (%h)" "$PREV..$GITHUB_SHA"
               echo ""
               echo ""
-              echo "**完整变更**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${CUR}"
+              echo "**完整变更**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
             else
-              git log --no-decorate --pretty=format:"- %s (%h)" "$CUR" | head -30
+              git log --no-decorate --pretty=format:"- %s (%h)" "$GITHUB_SHA" | head -30
             fi
             echo ""
             echo "---"
-            echo "版本：versionName ${VERSION} · 签名与历史版本一致，可直接覆盖安装（versionCode 未变时需先卸载）。"
+            echo "版本：versionName ${VERSION} · 签名与历史版本一致，可直接覆盖安装。"
           } > release_notes.md
           cat release_notes.md
 
-      - name: Create versioned release
+      - name: Create release
+        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$APK" \
-            --title "TextRelay $GITHUB_REF_NAME" \
+          gh release create "$TAG" "$APK" \
+            --target "$GITHUB_SHA" \
+            --title "TextRelay $TAG" \
             --notes-file release_notes.md

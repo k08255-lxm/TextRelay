@@ -14,11 +14,11 @@
 
 ## 下载 APK（自动发布）
 
-省额度设计：**只在打 `v*` 标签时编译一次**，发布一个正式 Release（Releases 页最新版本置顶）；平时提交代码不会触发任何构建。
+**全自动发版，无需手动打标签**：推送包含 APP 相关改动（`app/**`、Gradle 配置等）的提交到 main 后，Actions 会检查 `build.gradle.kts` 里的 `versionName`——是没发布过的新版本就自动编译并发布一个正式 Release（自动带更新日志）；版本号没变就自动跳过，不浪费额度。
 
-- **发新版**：递增 `versionCode` → `git tag v1.0.2 && git push origin v1.0.2` → Actions 编译并发布
+- **发新版**：改完代码把 `versionName` / `versionCode` 递增，随代码一起 push 即可
 - CI 产出的 APK 与本机构建**使用同一把签名密钥**（密钥经仓库 Secrets `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 注入，不进代码库），可直接互相覆盖安装
-- 工作流：[release.yml](.github/workflows/release.yml)，也支持在 Actions 页面手动触发
+- Actions 页面可手动触发，支持「强制重发」选项（重发同版本号）
 
 ## 构建与安装
 
