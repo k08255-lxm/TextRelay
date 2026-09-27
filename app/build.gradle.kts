@@ -46,7 +46,7 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = autoVersionCode
-        versionName = "1.0.6"
+        versionName = "1.0.7"
     }
 
     signingConfigs {
