@@ -1,0 +1,15 @@
+*.iml
+.gradle/
+.idea/
+.kotlin/
+build/
+local.properties
+keystore.properties
+*.keystore
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+.mimosa/
+__pycache__/
+*.pyc
